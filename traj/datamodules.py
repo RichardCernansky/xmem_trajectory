@@ -12,8 +12,10 @@ class NuScenesSeqLoader(Dataset):
         return 1000  # placeholder
 
     def __getitem__(self, idx):
-        # 1) load a window of T_in frames (as tensors [C,H,W]) → list length T_in
-        frames = [torch.randn(3, 360, 640) for _ in range(self.t_in)]  # stub
-        # 2) load GT future trajectory [T_out, 2]
-        traj = torch.randn(self.t_out, 2)  # stub
-        return {"frames": frames, "traj": traj}
+        # 1) create T_in frames, each [C,H,W]
+        frames = torch.stack([torch.randn(3,360,640) for _ in range(self.t_in)], dim=0)  # [T,C,H,W]
+
+        traj = torch.randn(self.t_out, 2)   # [T_out,2]
+        last_pos = torch.randn(2)           # [2]
+
+        return {"frames": frames, "traj": traj, "last_pos": last_pos}
