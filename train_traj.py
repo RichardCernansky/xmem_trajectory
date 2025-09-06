@@ -16,7 +16,6 @@ from model.network import XMem
 # --- memory-manager backbone wrapper ---
 from traj.predictor import XMemMMBackboneWrapper, xmem_mm_config
 
-
 def load_xmem(backbone_ckpt="./XMem/checkpoints/XMem-s012.pth", device="cuda"):
     """
     Proper loader that lets XMem read dims from the checkpoint.
@@ -27,7 +26,6 @@ def load_xmem(backbone_ckpt="./XMem/checkpoints/XMem-s012.pth", device="cuda"):
     net.load_weights(state, init_as_zero_if_needed=True)
     net.to(device).eval()
     return net
-
 
 def ade_fde_loss(pred_abs, gt_abs):  # [B, F, 2]
     l2 = torch.linalg.norm(pred_abs - gt_abs, dim=-1)
@@ -52,7 +50,7 @@ def main():
     # --- XMem + memory manager backbone ---
     xmem_core = load_xmem(device=device)
 
-    mm_cfg = xmem_mm_config(mem_every=3, min_mid=5, max_mid=10, num_prototypes=128)
+    mm_cfg = xmem_mm_config(mem_every=3, min_mid=5, max_mid=10, num_prototypes=128, hidden_dim=getattr(xmem_core, "hidden_dim", 256))
     backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device)
 
     # --- Trajectory head ---

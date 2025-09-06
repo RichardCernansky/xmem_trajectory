@@ -26,7 +26,9 @@ def xmem_mm_config(
     enable_long_term: bool = False,
     deep_update_every: int = 10**9,   # -1 => sync with mem_every
     top_k: int = 30,               # (if used by your repo build)
-    single_object: bool = False
+    single_object: bool = False,
+    hidden_dim: int = 256,
+
 ) -> Dict:
     return {
         "mem_every": mem_every,
@@ -40,7 +42,7 @@ def xmem_mm_config(
         "benchmark": False,
         "enable_long_term_count_usage": False,
         "single_object": single_object,
-        "hidden_dim": 256
+        "hidden_dim": hidden_dim
     }
 
 
@@ -54,6 +56,7 @@ class XMemMMBackboneWrapper(nn.Module):
         super().__init__()
         self.device = device
         self.net = xmem
+
         self.engine = InferenceCore(self.net, config=mm_cfg)   # memory manager
         self.last_hidden = None
         self._hook = None
@@ -100,33 +103,17 @@ class XMemMMBackboneWrapper(nn.Module):
 
                 # mask for this (b,t)
                 if t == 0:
-                    # foreground everywhere (you can replace with your real object mask)
-                    fg = torch.ones(H, W, device=self.device, dtype=frames.dtype)
-                    bg = 1.0 - fg
-                    m = torch.stack([bg, fg], dim=0)   # [2, H, W]  -> matches 5-channel input (3+2)
-                    lab = [1]                          # label for the foreground object
+                    # one object -> ONE channel
+                    m = torch.ones(1, H, W, device=self.device, dtype=rgb.dtype)  # [1,H,W]
+                    lab = [1]
                     self.engine.set_all_labels(lab)
                 else:
                     m = None
                     lab = None
 
-
                 # run one step (end=True on last frame)
-                # _ = self.engine.step(rgb, m, lab, end=(t == T - 1))
-
-                                # run one step; end=True on last frame
-                try:
-
-                    _ = self.engine.step(rgb, m, lab, end=(t == T - 1))
-                except Exception as e:
-                    # helpful debug info if anything still goes wrong
-                    print(
-                        f"[XMem step ERROR] b={b} t={t} "
-                        f"rgb={tuple(rgb.shape)} "
-                        f"mask={(None if m is None else tuple(m.shape))} "
-                        f"lab={lab} all_labels={self.engine.all_labels}"
-                    )
-                    raise
+                _ = self.engine.step(rgb, m, lab, end=(t == T - 1))
+     
 
                 # collect hidden feature captured by hook
                 if self.last_hidden is None:
