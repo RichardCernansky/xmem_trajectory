@@ -6,15 +6,18 @@ import torch.optim as optim
 from traj.head import TrajectoryHead
 from traj.datamodules import NuScenesSeqLoader   # your dataset class
 
+from nuscenes.nuscenes import NuScenes
+from traj.datamodules import NuScenesSeqLoader, collate_varK
+# --- memory-manager backbone wrapper ---
+from traj.predictor import XMemMMBackboneWrapper, xmem_mm_config
+from model.network import XMem
+
+
 # --- repo path (adjust if needed) ---
 REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-
-from model.network import XMem
-
-# --- memory-manager backbone wrapper ---
-from traj.predictor import XMemMMBackboneWrapper, xmem_mm_config
+NU_SCENES = r"E:\nuscenes"
 
 def load_xmem(backbone_ckpt="./XMem/checkpoints/XMem-s012.pth", device="cuda"):
     """
@@ -33,68 +36,96 @@ def ade_fde_loss(pred_abs, gt_abs):  # [B, F, 2]
     fde = l2[:, -1].mean()
     return ade, fde, ade + fde
 
-
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # --- data ---
-    # Your loader should return:
-    #   batch["frames"] : list length T_in of [B,3,H,W] tensors (already normalized)
-    #   batch["traj"]   : [B, F, 2] future absolute positions
-    #   batch["last_pos"]: [B, 2] last observed absolute position (t = T_in-1)
-    train_ds = NuScenesSeqLoader(split="train", t_in=8, t_out=30, modality="rgb")
+    # --- nuScenes handle (needed for on-the-fly masks) ---
+    # Make sure 'dataroot' points to your local nuScenes folder
+    nusc = NuScenes(version="v1.0-trainval", dataroot=NU_SCENES, verbose=True)
+
+    # --- Dataset from prebuilt index + on-the-fly t=0 masks ---
+    train_ds = NuScenesSeqLoader(
+        index_path="train_index.pkl",   # produced by build_index.py
+        nusc=nusc,
+        resize_hw=(360, 640),
+        classes_prefix=("vehicle.car", "vehicle.truck", "vehicle.bus"),
+        max_K=4,
+    )
+
+    # --- DataLoader (custom collate for variable-K masks) ---
     train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=8, shuffle=True, num_workers=4, pin_memory=True
+        train_ds,
+        batch_size=8,
+        shuffle=True,
+        num_workers=6,
+        pin_memory=True,
+        prefetch_factor=2,
+        collate_fn=collate_varK,   # <- critical for variable-K masks
     )
 
     # --- XMem + memory manager backbone ---
     xmem_core = load_xmem(device=device)
-
-    mm_cfg = xmem_mm_config(mem_every=3, min_mid=5, max_mid=10, num_prototypes=128, hidden_dim=getattr(xmem_core, "hidden_dim", 256))
+    mm_cfg = xmem_mm_config(
+        mem_every=3,
+        min_mid=5,
+        max_mid=10,
+        num_prototypes=128,
+        hidden_dim=getattr(xmem_core, "hidden_dim", 256),
+        enable_long_term=False,
+        deep_update_every=10**9,   # keep deep-update off to avoid channel mismatch
+        single_object=False,
+    )
     backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device)
 
-    # --- Trajectory head ---
-    # Do a tiny dry run to get D (feature dimension)
-    # Use a single batch from loader
+    # --- Trajectory head dimension via a tiny dry run ---
     first = next(iter(train_loader))
-    frames0 = first["frames"].to(device)   # stays [B,T,C,H,W]
+    frames0      = first["frames"].to(device)          # [B,T,3,H,W]
+    init_masks0  = first["init_masks"]                 # list of [K_i,H,W] (CPU)
+    init_labels0 = first["init_labels"]                # list[list[int]]
+
     with torch.no_grad():
-        feats0 = backbone(frames0)         # [B, T_feat, D]
+        feats0 = backbone(frames0, init_masks=init_masks0, init_labels=init_labels0)  # [B,T_feat,D]
     D = feats0.size(-1)
 
-    head = TrajectoryHead(d_in=D, d_hid=256, horizon=train_ds.t_out).to(device)
+    head = TrajectoryHead(d_in=D, d_hid=256, horizon=first["traj"].size(1)).to(device)
 
-    # Freeze backbone (it already runs no_grad internally)
+    # Freeze backbone (feature extractor only)
     for p in backbone.parameters():
         p.requires_grad = False
 
-    optim1 = optim.Adam(head.parameters(), lr=1e-3)
+    optim1 = torch.optim.Adam(head.parameters(), lr=1e-3)
 
     # --- Train head only ---
     head.train()
     for epoch in range(5):
         for batch in train_loader:
-            # move frames (list!) to device
-            frames = batch["frames"].to(device)  # stays [B,T,C,H,W]
-            gt_future = batch["traj"].to(device)       # [B, F, 2]
-            last_pos  = batch["last_pos"].to(device)   # [B, 2]
+            frames      = batch["frames"].to(device)        # [B, T, 3, H, W]
+            init_masks  = batch["init_masks"]               # list of [K_i, H, W] (CPU; leave as-is)
+            init_labels = batch["init_labels"]              # list[list[int]]
+            gt_future   = batch["traj"].to(device)          # [B, F, 2]
+            last_pos    = batch["last_pos"].to(device)      # [B, 2]
 
             with torch.no_grad():
-                feats_seq = backbone(frames)           # [B, T_feat, D]
+                feats = backbone(                           # [B, T_feat, D]
+                    frames,
+                    init_masks=init_masks,
+                    init_labels=init_labels
+                )
 
-            pred_offsets = head(feats_seq)             # [B, F, 2]
-            # convert offsets → absolute
-            pred_abs = last_pos.unsqueeze(1) + pred_offsets.cumsum(dim=1)
+            pred_offsets = head(feats)                      # [B, F, 2]
+            pred_abs = last_pos.unsqueeze(1) + pred_offsets.cumsum(dim=1)  # [B, F, 2]
 
             ade, fde, loss = ade_fde_loss(pred_abs, gt_future)
+
             optim1.zero_grad()
             loss.backward()
             optim1.step()
 
         print(f"Epoch {epoch}: ADE {ade.item():.3f}  FDE {fde.item():.3f}")
 
-    # Optional: fine-tuning XMem is non-trivial with InferenceCore (step() usually runs no_grad).
-    # Stick to head-only training unless you rework the wrapper to allow grads.
+    # Note: fine-tuning XMem is non-trivial (InferenceCore.step runs no_grad);
+    # stick to head-only training unless you rework the wrapper to allow grads.
+
 
 if __name__ == "__main__":
     main()

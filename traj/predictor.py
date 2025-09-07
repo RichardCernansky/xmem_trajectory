@@ -78,61 +78,58 @@ class XMemMMBackboneWrapper(nn.Module):
             self.engine.clear_memory()
         self.last_hidden = None
 
-    @torch.no_grad()
-    def forward(
-        self,
-        frames: torch.Tensor,                          # [B,T,C,H,W]
-        masks: Optional[List[Optional[torch.Tensor]]] = None,
-        labels: Optional[List] = None,
-    ) -> torch.Tensor:
+    def forward(self, frames, init_masks=None, init_labels=None, **_):
         B, T, C, H, W = frames.shape
         frames = frames.to(self.device)
 
         all_feats = []
-
         for b in range(B):
-            # reset per sequence
             self.engine.clear_memory()
             self.last_hidden = None
             self.engine.all_labels = None
 
             seq_feats = []
             for t in range(T):
-                # XMem expects unbatched image [C,H,W]
-                rgb = frames[b, t]  # [C,H,W]
+                rgb = frames[b, t]                         # [3,H,W]
 
-                # mask for this (b,t)
                 if t == 0:
-                    # one object -> ONE channel
-                    m = torch.ones(1, H, W, device=self.device, dtype=rgb.dtype)  # [1,H,W]
-                    lab = [1]
+                    if init_masks is not None:
+                        # support either [B,K,H,W] or [K,H,W]
+                        m = init_masks[b] if (torch.is_tensor(init_masks) and init_masks.ndim == 4) else init_masks
+                        m = m.to(self.device).float()      # [K,H,W]
+                        # ensure K>=1 and no background channel
+                        if m.ndim != 3:
+                            raise ValueError(f"init_masks must be [K,H,W], got {m.shape}")
+                        lab = init_labels[b] if isinstance(init_labels, list) and isinstance(init_labels[0], list) else init_labels
+                        if lab is None:
+                            lab = list(range(1, m.size(0)+1))
+                    else:
+                        # fallback: single full-frame
+                        m = torch.ones(1, H, W, device=self.device, dtype=rgb.dtype)
+                        lab = [1]
                     self.engine.set_all_labels(lab)
                 else:
-                    m = None
-                    lab = None
+                    m, lab = None, None
 
-                # run one step (end=True on last frame)
                 _ = self.engine.step(rgb, m, lab, end=(t == T - 1))
-     
 
-                # collect hidden feature captured by hook
                 if self.last_hidden is None:
                     continue
-                hid = self.last_hidden           # [1, D, H’, W’] (engine adds batch=1 internally)
-                feat = hid.view(1, hid.size(1), -1).mean(-1).squeeze(0)  # [D]
+                hid = self.last_hidden                     # [1,D,H',W']
+                feat = hid.view(1, hid.size(1), -1).mean(-1).squeeze(0)
                 seq_feats.append(feat)
 
-            if len(seq_feats) == 0:
+            if seq_feats:
+                all_feats.append(torch.stack(seq_feats, dim=0))
+            else:
                 D = getattr(self.net, "hidden_dim", 256)
                 all_feats.append(torch.zeros(0, D, device=self.device))
-            else:
-                all_feats.append(torch.stack(seq_feats, dim=0))  # [T_feat,D]
 
-        # pad to common T_feat (optional)
         max_Tf = max(f.size(0) for f in all_feats)
         D = all_feats[0].size(-1) if max_Tf > 0 else getattr(self.net, "hidden_dim", 256)
         out = torch.zeros(B, max_Tf, D, device=self.device)
         for b, fb in enumerate(all_feats):
             if fb.numel():
                 out[b, :fb.size(0)] = fb
-        return out  # [B,T_feat,D]
+        return out
+
