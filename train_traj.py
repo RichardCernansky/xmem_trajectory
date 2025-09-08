@@ -12,7 +12,6 @@ from traj.datamodules import NuScenesSeqLoader, collate_varK
 from traj.predictor import XMemMMBackboneWrapper, xmem_mm_config
 from model.network import XMem
 
-
 # --- repo path (adjust if needed) ---
 REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
 if REPO_ROOT not in sys.path:
@@ -82,7 +81,6 @@ def main():
     frames0      = first["frames"].to(device)          # [B,T,3,H,W]
     init_masks0  = first["init_masks"]                 # list of [K_i,H,W] (CPU)
     init_labels0 = first["init_labels"]                # list[list[int]]
-
     with torch.no_grad():
         feats0 = backbone(frames0, init_masks=init_masks0, init_labels=init_labels0)  # [B,T_feat,D]
     D = feats0.size(-1)
@@ -125,7 +123,6 @@ def main():
 
     # Note: fine-tuning XMem is non-trivial (InferenceCore.step runs no_grad);
     # stick to head-only training unless you rework the wrapper to allow grads.
-
 
 if __name__ == "__main__":
     main()

@@ -45,7 +45,6 @@ def xmem_mm_config(
         "hidden_dim": hidden_dim
     }
 
-
 class XMemMMBackboneWrapper(nn.Module):
     """
     XMem backbone that delegates memory policy to InferenceCore.
@@ -70,6 +69,13 @@ class XMemMMBackboneWrapper(nn.Module):
         if self._hook is not None:
             self._hook.remove()
         self._hook = self.net.decoder.register_forward_hook(_grab_hidden)
+    
+    def _pool_hidden(self, hid: torch.Tensor) -> torch.Tensor:
+        if hid.dim() == 5:
+            return hid.mean(dim=(1, 3, 4)).squeeze(0)
+        if hid.dim() == 4:
+            return hid.mean(dim=(2, 3)).squeeze(0)
+        raise RuntimeError(f"Unexpected hidden shape: {tuple(hid.shape)}")
 
     @torch.no_grad()
     def reset(self):
@@ -78,58 +84,52 @@ class XMemMMBackboneWrapper(nn.Module):
             self.engine.clear_memory()
         self.last_hidden = None
 
-    def forward(self, frames, init_masks=None, init_labels=None, **_):
-        B, T, C, H, W = frames.shape
-        frames = frames.to(self.device)
+    def forward(                           # inputs as batched data
+        self,
+        frames: torch.Tensor,              # [B,T,3,H,W] batch of RGB frame sequences
+        init_masks: List[torch.Tensor],    # list of [K_i,H,W] masks for t=0, per sample
+        init_labels: List[List[int]],      # list of lists of labels aligned with masks
+        **_,                               # ignore extra keys from collate (traj, meta, etc.)
+    ) -> torch.Tensor:
+        B, T, C, H, W = frames.shape       # unpack sequence dimensions
+        frames = frames.to(self.device)    # move frames to target device (GPU)
 
-        all_feats = []
-        for b in range(B):
-            self.engine.clear_memory()
-            self.last_hidden = None
-            self.engine.all_labels = None
+        all_feats = []                     # will collect per-sequence features
+        for b in range(B):                 # loop over batch dimension
+            self.engine.clear_memory()     # reset XMem memory for new sequence
+            self.last_hidden = None        # clear hidden state hook
+            self.engine.all_labels = None  # clear label assignment
 
-            seq_feats = []
-            for t in range(T):
-                rgb = frames[b, t]                         # [3,H,W]
+            seq_feats = []                 # will collect features across time for this sequence
+            m0 = init_masks[b].to(self.device).float()  # t=0 masks [K_i,H,W] on device
+            lab0 = [int(x) for x in init_labels[b]]     # convert labels to plain ints
 
-                if t == 0:
-                    if init_masks is not None:
-                        # support either [B,K,H,W] or [K,H,W]
-                        m = init_masks[b] if (torch.is_tensor(init_masks) and init_masks.ndim == 4) else init_masks
-                        m = m.to(self.device).float()      # [K,H,W]
-                        # ensure K>=1 and no background channel
-                        if m.ndim != 3:
-                            raise ValueError(f"init_masks must be [K,H,W], got {m.shape}")
-                        lab = init_labels[b] if isinstance(init_labels, list) and isinstance(init_labels[0], list) else init_labels
-                        if lab is None:
-                            lab = list(range(1, m.size(0)+1))
-                    else:
-                        # fallback: single full-frame
-                        m = torch.ones(1, H, W, device=self.device, dtype=rgb.dtype)
-                        lab = [1]
-                    self.engine.set_all_labels(lab)
-                else:
-                    m, lab = None, None
+            for t in range(T):             # loop over time steps
+                rgb = frames[b, t]         # current frame [3,H,W]
 
-                _ = self.engine.step(rgb, m, lab, end=(t == T - 1))
+                if t == 0:                 # first frame: provide initialization masks+labels
+                    self.engine.set_all_labels(lab0)                # register object IDs
+                    _ = self.engine.step(rgb, m0, lab0, end=(t == T - 1))
+                else:                      # later frames: no masks, tracker propagates
+                    _ = self.engine.step(rgb, None, None, end=(t == T - 1))
 
-                if self.last_hidden is None:
-                    continue
-                hid = self.last_hidden                     # [1,D,H',W']
-                feat = hid.view(1, hid.size(1), -1).mean(-1).squeeze(0)
-                seq_feats.append(feat)
+                if self.last_hidden is not None:        # hook captured decoder hidden state
+                    hid = self.last_hidden              # [K,C,H',W']
+                    feat = self._pool_hidden(hid)
+                    # → global pooled feature vector [C]
+                    seq_feats.append(feat)
 
-            if seq_feats:
-                all_feats.append(torch.stack(seq_feats, dim=0))
-            else:
+            if seq_feats:                               # stack features for this sequence
+                all_feats.append(torch.stack(seq_feats, dim=0))  # [T_f,C]
+            else:                                       # edge case: no features
                 D = getattr(self.net, "hidden_dim", 256)
                 all_feats.append(torch.zeros(0, D, device=self.device))
 
-        max_Tf = max(f.size(0) for f in all_feats)
+        max_Tf = max(f.size(0) for f in all_feats)      # maximum time length across batch
         D = all_feats[0].size(-1) if max_Tf > 0 else getattr(self.net, "hidden_dim", 256)
-        out = torch.zeros(B, max_Tf, D, device=self.device)
-        for b, fb in enumerate(all_feats):
+        out = torch.zeros(B, max_Tf, D, device=self.device)  # allocate [B,max_Tf,C]
+
+        for b, fb in enumerate(all_feats):              # copy each seq into padded tensor
             if fb.numel():
                 out[b, :fb.size(0)] = fb
-        return out
-
+        return out                                      # [B,max_Tf,C] batch of features
