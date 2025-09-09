@@ -20,9 +20,10 @@ assumptions:
     - fixed size of future timestamps
     - using ego vehicle coordinates
     - mask computation on-the-fly
+    - fused (LidDAR + RGB) channel weights = 3 + n_lidar 
 
     - paralelize the training loops 
-    - resonnet into 2d and into memory and turn on long term
+    - ReasonNet into 2d and into memory and turn on long term
     - decide on reimplementation of prioritizing prototypes
     - improve classification head 
 
@@ -91,4 +92,8 @@ assumptions:
 
 
 *Output example:
-    Epoch 0: ADE 0.143  FDE 0.277
+    Epoch 0: ADE 15.394 | FDE 24.972
+    Epoch 1: ADE 13.210 | FDE 25.394
+    Epoch 2: ADE 7.497 | FDE 16.776
+    Epoch 3: ADE 16.252 | FDE 33.031
+    Epoch 4: ADE 4.241 | FDE 13.543

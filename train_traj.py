@@ -9,10 +9,11 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from model.network import XMem
+from xmem_mm_config import xmem_mm_config
 
 # --- our modules ---
 from traj.head import TrajectoryHead
-from traj.predictor import XMemMMBackboneWrapper, xmem_mm_config
+from traj.predictor import XMemMMBackboneWrapper
 from traj.datamodules import NuScenesSeqLoader, collate_varK
 from nuscenes.nuscenes import NuScenes
 
