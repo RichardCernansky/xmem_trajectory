@@ -1,21 +1,25 @@
-import torch, torch.nn as nn
+# traj/head.py
+import torch
+import torch.nn as nn
 
 class TrajectoryHead(nn.Module):
-    def __init__(self, d_in: int, d_hid: int = 256, horizon: int = 30):
+    """
+    Input:  [B, T_feat, D]
+    Output: [B, F, 2]  (offsets)
+    """
+    def __init__(self, d_in: int, d_hid: int, horizon: int):
         super().__init__()
-        self.gru = nn.GRU(d_in, d_hid, num_layers=1, batch_first=True)
-        self.proj = nn.Linear(d_hid, 2)  # (dx, dy) per step
         self.horizon = horizon
+        self.gru = nn.GRU(input_size=d_in, hidden_size=d_hid, batch_first=True)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_hid, d_hid),
+            nn.ReLU(inplace=True),
+            nn.Linear(d_hid, 2 * horizon),
+        )
 
-    def forward(self, x_seq):  # [B, T_in, d_in]
-        h, _ = self.gru(x_seq)                 # [B, T_in, d_hid]
-        last = h[:, -1]                        # [B, d_hid]
-        # Predict future offsets step-by-step from last hidden
-        outs = []
-        state = last.unsqueeze(1)              # [B,1,d_hid]
-        for _ in range(self.horizon):
-            dxdy = self.proj(state.squeeze(1)) # [B,2]
-            outs.append(dxdy.unsqueeze(1))
-            # simple autoregressive state update (optional: another GRUCell)
-            state = state                      # keep state (minimal baseline)
-        return torch.cat(outs, dim=1)          # [B, horizon, 2]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B,T_feat,D]
+        h, _ = self.gru(x)                 # [B,T_feat,d_hid]
+        h_last = h[:, -1]                  # [B,d_hid]
+        out = self.mlp(h_last)             # [B,2*horizon]
+        return out.view(-1, self.horizon, 2)  # [B,F,2]

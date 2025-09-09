@@ -1,25 +1,54 @@
-Folder structure:
-XMem/
- ├─ xmem/                # original
- ├─ traj/                # <-- new
- │   ├─ predictor.py     # wrapper that uses XMem encoders+memory
- │   ├─ head.py          # small GRU/MLP head
- │   └─ datamodules.py   # lightweight nuScenes sequence loader (stub)
- └─ train_traj.py        # your training script
+# XMem Trajectory Extension
 
-# xmem_trajectory
+## Folder Structure
+
+```plaintext
+XMem/
+ ├─ xmem/                
+ │    └─ ...              # Original XMem implementation
+ ├─ traj/                 # Trajectory prediction extension
+ │    ├─ predictor.py     # Wrapper that uses XMem encoders + memory
+ │    ├─ head.py          # Small GRU/MLP head
+ │    └─ datamodules.py   # Lightweight nuScenes sequence loader (stub)
+ └─ train_traj.py         # Training script
+
 
 
 XMEM PIPELINE #1 - PSEUDO
+assumptions:
+    - no long term memory yet, xmem selection mechanism
+    - fixed size of future timestamps
+    - using ego vehicle coordinates
+    - mask computation on-the-fly
 
-*Prefatched Data index: {
-        "frames": frames,
-        "traj": traj,
-        "last_pos": last,
-        "init_masks": init_masks,
-        "init_labels": init_labels,
-        "meta": meta,
-    }
+    - paralelize the training loops 
+    - resonnet into 2d and into memory and turn on long term
+    - decide on reimplementation of prioritizing prototypes
+    - improve classification head 
+
+
+*Prefatched Data index row: {
+                    "scene_name": scene_name,
+                    "start_sample_token": obs_tokens[0],
+                    "obs_sample_tokens": obs_tokens,
+                    "fut_sample_tokens": fut_tokens,
+                    "cam": cam,
+                    "cam_sd_tokens": cam_sd_tokens,   # len = t_in
+                    "img_paths": img_paths,           # len = t_in
+                    "intrinsics": intrinsics,         # len = t_in, 3x3 each
+
+                    "target": {
+                        "agent_id": inst_tok,
+                        "last_xy": last_xy_e,         # EGO frame at t_in-1
+                        "future_xy": fut_xy_e,        # EGO frame, len = t_out
+                        "frame": "ego_xy"
+                    },
+
+                    "context": {
+                        "t0_cam_sd_token": cam_sd_tokens[0],  # for on-the-fly masks
+                        "anchor_sd_token": sd_anchor          # ego frame anchor (optional)
+                    }
+                }
 
 *def xmem_backbone.step(frames, init_masks, init_labels):
     B, T, C, H, W = frames.shape # Batch, Timestamp, Channel, Height, Width
