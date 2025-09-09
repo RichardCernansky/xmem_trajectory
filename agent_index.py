@@ -1,4 +1,3 @@
-# nuscenes_index_agents.py
 from typing import List, Dict, Optional, Tuple
 import numpy as np
 from nuscenes.nuscenes import NuScenes
@@ -22,8 +21,15 @@ def _cam_sd_and_img(nusc: NuScenes, sample_token: str, cam: str):
     """(sample_data token, img_path, intrinsics 3x3) for camera at a sample."""
     s = nusc.get("sample", sample_token)
     sd_tok = s["data"][cam]
-    img_path, _, K = nusc.get_sample_data(sd_tok, box_vis_level=0)
-    return sd_tok, img_path, np.asarray(K, dtype=np.float32)
+    sd = nusc.get("sample_data", sd_tok)
+    calib = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
+    K = np.asarray(calib["camera_intrinsic"], dtype=np.float32)
+    img_path = nusc.get_sample_data_path(sd_tok)
+    return sd_tok, img_path, K
+
+def _lidar_sd_and_bin(nusc: NuScenes, sample_token: str):
+    sd_tok = nusc.get("sample", sample_token)["data"]["LIDAR_TOP"]
+    return sd_tok, nusc.get_sample_data_path(sd_tok)
 
 def _ann_by_instance(nusc: NuScenes, sample_token: str) -> Dict[str, dict]:
     """instance_token -> sample_annotation at this sample (if present)."""
@@ -34,7 +40,7 @@ def _ann_by_instance(nusc: NuScenes, sample_token: str) -> Dict[str, dict]:
         out[ann["instance_token"]] = ann
     return out
 
-def _xy_from_ann_global(ann: dict):
+def _xy_from_ann_global(ann: dict) -> Tuple[float, float]:
     x, y, _ = ann["translation"]
     return float(x), float(y)
 
@@ -42,9 +48,43 @@ def _ego_pose_from_sd(nusc: NuScenes, sd_token: str):
     """Return (t_world: (3,), R_world(3x3)) for the ego pose attached to a sample_data."""
     sd = nusc.get("sample_data", sd_token)
     ego = nusc.get("ego_pose", sd["ego_pose_token"])
-    t = np.asarray(ego["translation"], dtype=np.float32)  # (3,)
+    t = np.asarray(ego["translation"], dtype=np.float32)            # (3,)
     R = Quaternion(ego["rotation"]).rotation_matrix.astype(np.float32)  # (3,3)
     return t, R
+
+def _T_from_calib(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    """4x4 transform from calibrated_sensor (sensor-in-ego)."""
+    sd = nusc.get("sample_data", sd_token)
+    cs = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
+    t = np.asarray(cs["translation"], dtype=np.float32)
+    R = Quaternion(cs["rotation"]).transformation_matrix
+    R[:3, 3] = t
+    return R.astype(np.float32)  # T_ego_sensor
+
+def _pose_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    """4x4 ego pose (ego-in-world) for a sample_data."""
+    sd = nusc.get("sample_data", sd_token)
+    ep = nusc.get("ego_pose", sd["ego_pose_token"])
+    t = np.asarray(ep["translation"], dtype=np.float32)
+    R = Quaternion(ep["rotation"]).transformation_matrix
+    R[:3, 3] = t
+    return R.astype(np.float32)  # T_world_ego
+
+def _compute_T_cam_lidar(nusc: NuScenes, cam_sd_token: str, lidar_sd_token: str) -> np.ndarray:
+    """
+    Return 4x4 transform from LiDAR to camera: T_cam_lidar.
+    T_world_cam = T_world_ego_cam * T_ego_cam
+    T_world_lid = T_world_ego_lid * T_ego_lid
+    T_cam_lidar = (T_world_cam)^-1 * T_world_lid
+    """
+    T_world_ego_cam = _pose_4x4(nusc, cam_sd_token)
+    T_world_ego_lid = _pose_4x4(nusc, lidar_sd_token)
+    T_ego_cam = _T_from_calib(nusc, cam_sd_token)
+    T_ego_lid = _T_from_calib(nusc, lidar_sd_token)
+    T_world_cam = T_world_ego_cam @ T_ego_cam
+    T_world_lid = T_world_ego_lid @ T_ego_lid
+    T_cam_world = np.linalg.inv(T_world_cam)
+    return (T_cam_world @ T_world_lid).astype(np.float32)
 
 # ---------- main builder (EGO-CENTRIC) ----------
 
@@ -59,14 +99,11 @@ def build_agent_sequence_index(
     min_future: Optional[int] = None,          # require at least N future steps (<= t_out)
     min_speed_mps: float = 0.0,                # skip near-stationary targets if > 0
     class_prefixes: Tuple[str, ...] = ("vehicle.", "human.pedestrian"),
+    dataroot: Optional[str] = None,
 ) -> List[Dict]:
     """
-    Build a flat list where EACH ROW is (window, target agent).
-    Coordinates are saved in the EGO frame at the last observed timestep:
-      - last_xy, future_xy are expressed in ego(x,y) (meters).
-      - The ego frame is defined by the CAM rig pose at obs[t_in-1].
-
-    Note: you can still switch to agent-centric later by subtracting target last_xy.
+    Each row = (window, target agent) with coordinates in the EGO frame anchored at obs[t_in-1].
+    Also includes per-observation LiDAR paths and T_cam_lidar matrices for projection/fusion.
     """
     if min_future is None:
         min_future = t_out
@@ -98,40 +135,42 @@ def build_agent_sequence_index(
             obs_tokens = tokens[start : start + t_in]
             fut_tokens = tokens[start + t_in : start + t_in + t_out]
 
-            # camera data for observed frames
+            # camera & lidar data for observed frames
             cam_sd_tokens, img_paths, intrinsics = [], [], []
+            lidar_sd_tokens, lidar_paths, T_cam_lidar = [], [], []
             for st in obs_tokens:
-                sd_tok, path, K = _cam_sd_and_img(nusc, st, cam)
-                cam_sd_tokens.append(sd_tok)
-                img_paths.append(path)
+                cam_sd, img, K = _cam_sd_and_img(nusc, st, cam)
+                lid_sd, lid_path = _lidar_sd_and_bin(nusc, st)
+                cam_sd_tokens.append(cam_sd)
+                img_paths.append(img.replace("\\", "/"))
                 intrinsics.append(K.tolist())
+                lidar_sd_tokens.append(lid_sd)
+                lidar_paths.append(lid_path.replace("\\", "/"))
+                T_cam_lidar.append(_compute_T_cam_lidar(nusc, cam_sd, lid_sd).tolist())
 
-            # EGO frame anchor: use the ego pose of the LAST observed camera sample_data
+            # ego frame anchor = ego pose of LAST observed camera sample_data
             sd_anchor = cam_sd_tokens[-1]
-            t_w, R_w = _ego_pose_from_sd(nusc, sd_anchor)  # ego pose in world at t_in-1
-            # world->ego rotation (2D) and translation
-            R_we_2x2 = R_w[:2, :2].T               # inverse of R_w (2D block)
-            t_w_2 = t_w[:2]                        # world translation
+            t_w, R_w = _ego_pose_from_sd(nusc, sd_anchor)
+            R_we_2x2 = R_w[:2, :2].T  # inverse rotation (2D)
+            t_w_2 = t_w[:2]
 
             def world_xy_to_ego_xy(xy_world: Tuple[float, float]) -> List[float]:
-                p = np.asarray(xy_world, dtype=np.float32) - t_w_2     # translate to ego origin
-                q = R_we_2x2 @ p                                       # rotate into ego axes
+                p = np.asarray(xy_world, dtype=np.float32) - t_w_2
+                q = R_we_2x2 @ p
                 return [float(q[0]), float(q[1])]
 
-            # candidate targets from last observed sample
+            # candidates from last observed sample
             ann_last = _ann_by_instance(nusc, obs_tokens[-1])
             if not ann_last:
                 continue
 
             for inst_tok, last_ann in ann_last.items():
-                # coarse class filter
                 name = last_ann.get("category_name", "")
                 if not any(name.startswith(p) for p in class_prefixes):
                     continue
 
-                # collect future XY (world), then convert to ego
-                fut_xy_e = []
-                valid = 0
+                # future XY in ego coords
+                fut_xy_e, valid = [], 0
                 for ft in fut_tokens:
                     m = _ann_by_instance(nusc, ft)
                     ann_f = m.get(inst_tok, None)
@@ -139,15 +178,14 @@ def build_agent_sequence_index(
                         break
                     fut_xy_e.append(world_xy_to_ego_xy(_xy_from_ann_global(ann_f)))
                     valid += 1
-
                 if valid < min_future:
                     continue
 
-                # stationary filter (~1.5s at 2Hz), in WORLD before transform (either is fine)
+                # stationary filter (approx over ~1.5s @2Hz)
                 if min_speed_mps > 0 and valid >= 2:
-                    x0, y0, _ = last_ann["translation"]
-                    x3, y3 = fut_xy_e[min(3, len(fut_xy_e)-1)]  # NOTE: this is ego now
-                    # Use ego distances; same threshold meaning (meters / 1.5s)
+                    # Use ego distance of the 3rd future point as rough proxy
+                    j = min(3, len(fut_xy_e)-1)
+                    x3, y3 = fut_xy_e[j]
                     dist = (x3**2 + y3**2) ** 0.5
                     approx_speed = dist / 1.5
                     if approx_speed < min_speed_mps:
@@ -161,21 +199,24 @@ def build_agent_sequence_index(
                     "obs_sample_tokens": obs_tokens,
                     "fut_sample_tokens": fut_tokens,
                     "cam": cam,
-                    "cam_sd_tokens": cam_sd_tokens,   # len = t_in
-                    "img_paths": img_paths,           # len = t_in
-                    "intrinsics": intrinsics,         # len = t_in, 3x3 each
+
+                    "cam_sd_tokens": cam_sd_tokens,     # len = t_in
+                    "img_paths": img_paths,             # len = t_in
+                    "intrinsics": intrinsics,           # len = t_in, 3x3 each
+                    "lidar_sd_tokens": lidar_sd_tokens, # len = t_in
+                    "lidar_paths": lidar_paths,         # len = t_in
+                    "T_cam_lidar": T_cam_lidar,         # len = t_in, 4x4 each
 
                     "target": {
                         "agent_id": inst_tok,
-                        "last_xy": last_xy_e,         # EGO frame at t_in-1
-                        "future_xy": fut_xy_e,        # EGO frame, len = t_out
+                        "last_xy": last_xy_e,            # EGO frame at t_in-1
+                        "future_xy": fut_xy_e,           # EGO frame, len = t_out
                         "frame": "ego_xy"
                     },
-
                     "context": {
-                        "t0_cam_sd_token": cam_sd_tokens[0],  # for on-the-fly masks
-                        "anchor_sd_token": sd_anchor          # ego frame anchor (optional)
-                    }
+                        "anchor_sd_token": sd_anchor     # ego frame anchor (optional)
+                    },
+                    "dataroot": dataroot or ""           # helps loaders rebuild NuScenes if needed
                 })
 
     return rows
