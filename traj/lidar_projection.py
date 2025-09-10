@@ -49,7 +49,7 @@ def project_points(points_xyz_i: np.ndarray, K: np.ndarray, T_cam_lidar: np.ndar
     inten = points_xyz_i[:, 3:4].T if points_xyz_i.shape[1] > 3 else np.ones((1, pts.shape[1]), dtype=pts.dtype)
     pc_cam = (T_cam_lidar @ _to_hom(pts))[:3]
     z = pc_cam[2]
-    mask = z > 0
+    mask = (z > 1e-6) & np.isfinite(z)
     pc_cam = pc_cam[:, mask]
     z = z[mask]
     inten = inten[:, mask]
@@ -80,7 +80,7 @@ def rasterize(u, v, z, intensity, y_cam, H, W, max_depth=80.0, h_min=-2.0, h_max
     avg_i[m] = sum_i[m] / cnt[m]
     i_n = np.clip(avg_i, 0.0, 1.0)
     c_n = np.clip(cnt / count_clip, 0.0, 1.0)
-    return np.stack([d_n, h_n, i_n, c_n, occ], axis=0).astype(np.float32)
+    return np.stack([d_n, h_n, i_n, c_n, occ], axis=0).astype(np.float32) # Shape: [5, H, W] = [depth, height, intensity, count, occupancy].
 
 def lidar_to_2d_maps(points_xyz_i: np.ndarray, K: np.ndarray, T_cam_lidar: np.ndarray, W: int, H: int,
                      max_depth=80.0, h_min=-2.0, h_max=4.0, count_clip=5) -> torch.Tensor:

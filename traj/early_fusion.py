@@ -8,7 +8,7 @@ class EarlyFusionAdapter(nn.Module):
         self.mode = mode
         in_ch = 3 + n_lidar if mode == "concat" else n_lidar
         self.proj = nn.Conv2d(in_ch, out_channels, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity()
+        self.bn = nn.BatchNorm2d(out_channels) if use_bn else nn.Identity() # different scales of RGB and LiDAR so need of batch norm
         with torch.no_grad():
             w = self.proj.weight
             w.zero_()

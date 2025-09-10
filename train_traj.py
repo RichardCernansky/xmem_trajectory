@@ -38,14 +38,18 @@ def main():
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=2, shuffle=True, num_workers=4, pin_memory=True, collate_fn=collate_varK)
 
     xmem_core = load_xmem(device=device)
-    mm_cfg = xmem_mm_config(xmem_core)
-
-    backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device, n_lidar=5, fusion_mode="concat", use_bn=False)
+    mm_cfg = xmem_mm_config(
+            mem_every=3, min_mid=5, max_mid=10, num_prototypes=128,
+            hidden_dim=getattr(xmem_core, "hidden_dim", 256),
+            enable_long_term=False,          # keep simple/stable to start
+            deep_update_every=10**9          # disable deep update at t=0
+        )
+    backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device, n_lidar=5, fusion_mode="concat", use_bn=False).to(device)
     head = TrajectoryHead(d_in=getattr(xmem_core, "hidden_dim", 256), d_hid=256, horizon=30).to(device)
 
     optim_all = optim.AdamW([p for p in list(backbone.parameters()) + list(head.parameters()) if p.requires_grad], lr=1e-3)
 
-    for epoch in range(5):
+    for epoch in range(10):
         for batch in train_loader:
             frames      = batch["frames"].to(device)
             lidar_maps  = batch["lidar_maps"].to(device)
