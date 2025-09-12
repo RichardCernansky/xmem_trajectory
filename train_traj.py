@@ -39,11 +39,7 @@ def main():
 
     xmem_core = load_xmem(device=device)
     mm_cfg = xmem_mm_config(
-            mem_every=3, min_mid=5, max_mid=10, num_prototypes=128,
             hidden_dim=getattr(xmem_core, "hidden_dim", 256),
-            enable_long_term=True,          # keep simple/stable to start
-            deep_update_every=10**9,          # disable deep update at t=0
-            enable_long_term_count_usage=True
         )
     backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device, n_lidar=5, fusion_mode="concat", use_bn=False).to(device)
     head = TrajectoryHead(d_in=getattr(xmem_core, "hidden_dim", 256), d_hid=256, horizon=30).to(device)

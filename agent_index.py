@@ -3,8 +3,14 @@ import numpy as np
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.splits import train as TRAIN_SCENES, val as VAL_SCENES
 from pyquaternion import Quaternion
+from nuscenes.utils.geometry_utils import BoxVisibility
 
 # ---------- helpers ----------
+
+def _is_instance_in_camera(nusc: NuScenes, cam_sd_token: str, inst_tok: str) -> bool:
+    _, boxes, _ = nusc.get_sample_data(cam_sd_token, box_vis_level=BoxVisibility.ANY)
+    return any(getattr(b, "instance_token", None) == inst_tok for b in boxes)
+
 
 def _scene_tokens(nusc: NuScenes, scene_name: str) -> List[str]:
     """Ordered sample tokens for a scene name."""
@@ -98,7 +104,7 @@ def build_agent_sequence_index(
     stride: int = 1,
     min_future: Optional[int] = None,          # require at least N future steps (<= t_out)
     min_speed_mps: float = 0.0,                # skip near-stationary targets if > 0
-    class_prefixes: Tuple[str, ...] = ("vehicle.", "human.pedestrian"),
+    class_prefixes: Tuple[str, ...] = ("vehicle."),
     dataroot: Optional[str] = None,
 ) -> List[Dict]:
     """
@@ -192,6 +198,10 @@ def build_agent_sequence_index(
                         continue
 
                 last_xy_e = world_xy_to_ego_xy(_xy_from_ann_global(last_ann))
+
+                # Ensure target is in the chosen camera at t=0 (first observed frame)
+                if not _is_instance_in_camera(nusc, cam_sd_tokens[0], inst_tok):
+                    continue
 
                 rows.append({
                     "scene_name": scene_name,

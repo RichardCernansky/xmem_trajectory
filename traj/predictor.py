@@ -3,6 +3,7 @@ import sys
 from typing import List, Optional, Dict
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
 if REPO_ROOT not in sys.path:
@@ -13,12 +14,6 @@ from traj.early_fusion import EarlyFusionAdapter
 
 
 class XMemMMBackboneWrapper(nn.Module):
-    """
-    XMem backbone wrapper (hkchengrex/XMem compatible) with optional early fusion.
-    - Parallel across batch (one engine per sequence), sequential over time per seq.
-    - Exposes per-frame features via a decoder hidden-state hook, pooled to [C].
-    """
-
     def __init__(self,
                  mm_cfg: Dict,
                  xmem,
@@ -27,15 +22,10 @@ class XMemMMBackboneWrapper(nn.Module):
                  fusion_mode: str = "concat",
                  use_bn: bool = False):
         super().__init__()
-        # normalize device
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-
-        # net (constructed outside with the same cfg) lives on device already
         self.net = xmem
         self.mm_cfg = mm_cfg
         self.hidden_dim = getattr(self.net, "hidden_dim", mm_cfg.get("hidden_dim", 256))
-
-        # early fusion adapter (RGB [3] + LiDAR [C_lidar] -> fused [3])
         self.fusion = EarlyFusionAdapter(
             n_lidar=n_lidar, mode=fusion_mode, out_channels=3, use_bn=use_bn
         ) if n_lidar > 0 else nn.Identity()
@@ -54,22 +44,29 @@ class XMemMMBackboneWrapper(nn.Module):
 
     # ---------------- hooks ----------------
     def _register_hidden_hook(self):
-        # decoder returns (hidden_state, logits) in this repo; grab hidden_state
+        # decoder returns (hidden_state, logits); we grab hidden_state which should be [1,K,C,H,W]
         def _grab_hidden(module, inputs, output):
             if self._hook_target_idx is not None and self._hook_target_idx < len(self._hidden_per_seq):
-                self._hidden_per_seq[self._hook_target_idx] = output[0]  # [B,C,H',W'] or [B,K,C,H',W']
+                self._hidden_per_seq[self._hook_target_idx] = output[0]
         if self._hook is not None:
             self._hook.remove()
         self._hook = self.net.decoder.register_forward_hook(_grab_hidden)
 
     @staticmethod
-    def _pool_hidden(hid: torch.Tensor) -> torch.Tensor:
-        # [1,K,C,H',W'] -> [C]   or   [1,C,H',W'] -> [C]
-        if hid.dim() == 5:
-            return hid.mean(dim=(1, 3, 4)).squeeze(0)
-        if hid.dim() == 4:
-            return hid.mean(dim=(2, 3)).squeeze(0)
-        raise RuntimeError(f"Unexpected hidden shape: {tuple(hid.shape)}")
+    def _masked_avg_pool5_single(hid: torch.Tensor, prob: torch.Tensor, ch: int, eps: float = 1e-6) -> torch.Tensor:
+        # hid:  [1,K,C,H,W]   prob: [1,K,Hm,Wm] or [K,Hm,Wm]
+        assert hid.dim() == 5, f"Expected hid [1,K,C,H,W], got {tuple(hid.shape)}"
+        if prob.dim() == 3:
+            prob = prob.unsqueeze(0)  # -> [1,K,Hm,Wm]
+
+        hid_ch = hid[:, ch]                 # [1,C,H,W]
+        m = prob[:, ch:ch+1]                # [1,1,Hm,Wm]
+        if m.shape[-2:] != hid_ch.shape[-2:]:
+            m = F.interpolate(m, size=hid_ch.shape[-2:], mode="bilinear", align_corners=False)
+
+        num = (hid_ch * m).sum(dim=(2, 3))  # [1,C]
+        den = m.sum(dim=(2, 3)).clamp_min(eps)  # [1,1]
+        return (num / den).squeeze(0)       # [C]
 
     # ---------------- engine mgmt ----------------
     def _ensure_capacity(self, B: int):
@@ -77,22 +74,18 @@ class XMemMMBackboneWrapper(nn.Module):
         if cur >= B:
             return
         need = B - cur
-        # exact signature for hkchengrex/XMem
         self.engines += [InferenceCore(self.net, config=self.mm_cfg) for _ in range(need)]
-
         if torch.cuda.is_available() and self.device.type == "cuda":
-            dev = self.device  # torch.device
+            dev = self.device
             self.streams += [torch.cuda.Stream(device=dev) for _ in range(need)]
         else:
             self.streams += [None for _ in range(need)]
 
     def _hard_reset_engine(self, eng: InferenceCore):
-        """Reset memory + common time counters across forks."""
         if hasattr(eng, "clear_memory"):
             eng.clear_memory()
         if hasattr(eng, "all_labels"):
             eng.all_labels = None
-        # reset time indices if present (harmless if absent)
         if hasattr(eng, "ti"):
             eng.ti = 0
         if hasattr(eng, "curr_ti"):
@@ -111,7 +104,6 @@ class XMemMMBackboneWrapper(nn.Module):
     ) -> torch.Tensor:
         assert frames.ndim == 5, f"frames must be [B,T,3,H,W], got {frames.shape}"
         B, T, _, H, W = frames.shape
-
         frames = frames.to(self.device, non_blocking=True)
         has_lidar = lidar_maps is not None
         if has_lidar:
@@ -123,13 +115,11 @@ class XMemMMBackboneWrapper(nn.Module):
             assert isinstance(init_labels, list) and len(init_labels) == B
 
         self._ensure_capacity(B)
-
-        # reset engines + scratch
         for eng in self.engines[:B]:
             self._hard_reset_engine(eng)
         self._hidden_per_seq = [None for _ in range(B)]
 
-        # prepare t=0 masks/labels
+        # t=0 masks/labels
         masks0: List[torch.Tensor] = []
         labels0: List[List[int]] = []
         for b in range(B):
@@ -140,7 +130,7 @@ class XMemMMBackboneWrapper(nn.Module):
                 if m0 is not None and not torch.is_tensor(m0):
                     m0 = torch.as_tensor(m0)
                 if m0 is not None and m0.ndim == 2:
-                    m0 = m0.unsqueeze(0)
+                    m0 = m0.unsqueeze(0)          # -> [K0,H,W] with K0=1
             if init_labels is not None:
                 lab0 = init_labels[b]
                 if torch.is_tensor(lab0):
@@ -154,32 +144,21 @@ class XMemMMBackboneWrapper(nn.Module):
             labels0.append(lab0)
 
         feats: List[List[torch.Tensor]] = [[] for _ in range(B)]
+        target_label = [labels0[b][0] for b in range(B)]  # choose first as target by default
 
-        # engine.step signature in hkchengrex/XMem:
-        #   step(image: [3,H,W], mask: [K,H,W] or None, labels: list[int] or None, end: bool)
         def _engine_step(eng, img, masks, labels, is_last):
             m_in = masks if masks is not None else None
             return eng.step(img, m_in, labels, end=is_last)
 
-        # sequential in t, overlapped across sequences via CUDA streams
         for t in range(T):
             for b in range(B):
                 eng = self.engines[b]
                 stream = self.streams[b]
-
-                # Build the per-frame input
-                rgb = frames[b, t]  # [3,H,W]
-                if has_lidar:
-                    lid = lidar_maps[b, t]  # [C_lidar,H,W]
-                    # Early fusion expects BCHW; squeeze back for engine
-                    fused = self.fusion(rgb.unsqueeze(0), lid.unsqueeze(0)).squeeze(0)  # [3,H,W]
-                    img = fused
-                else:
-                    img = rgb  # [3,H,W]
-
-                # route hook outputs to the right slot
+                rgb = frames[b, t]
+                img = self.fusion(rgb.unsqueeze(0), lidar_maps[b, t].unsqueeze(0)).squeeze(0) if has_lidar else rgb
                 self._hook_target_idx = b
 
+                # GPU fast-path with per-seq stream; else run on current context
                 if torch.cuda.is_available() and self.device.type == "cuda" and stream is not None:
                     with torch.cuda.stream(stream):
                         self._hidden_per_seq[b] = None
@@ -190,30 +169,35 @@ class XMemMMBackboneWrapper(nn.Module):
                         else:
                             _engine_step(eng, img, None, None, is_last=(t == T - 1))
                         hid = self._hidden_per_seq[b]
-                        if hid is not None:
-                            feats[b].append(self._pool_hidden(hid))
+                        if hid is None or hid.dim() != 5:
+                            raise RuntimeError(f"Decoder hook must return [1,K,C,H,W]; got {None if hid is None else tuple(hid.shape)}")
+                        prob = getattr(eng, "prob", None)
+                        if prob is not None:
+                            feat = self._masked_avg_pool5_single(hid, prob, ch=0)   # weighted by the target’s soft mask
+                        else:
+                            feat = self._mean_pool5_single(hid, ch=0)               # plain mean over H,W (no mask available)
+
+                        feats[b].append(feat)  # [C]          
                 else:
-                    self._hidden_per_seq[b] = None
-                    if t == 0:
-                        if hasattr(eng, "set_all_labels"):
-                            eng.set_all_labels(labels0[b])
-                        _engine_step(eng, img, masks0[b], labels0[b], is_last=(t == T - 1))
-                    else:
-                        _engine_step(eng, img, None, None, is_last=(t == T - 1))
-                    hid = self._hidden_per_seq[b]
-                    if hid is not None:
-                        feats[b].append(self._pool_hidden(hid))
+                    print("Error: GPU not accessible")
 
         if torch.cuda.is_available() and self.device.type == "cuda":
             torch.cuda.synchronize()
 
-        # pad to [B, T_feat, D]
+        # stack to [B, T_feat, D] with D inferred from the first non-empty list
         sizes = [len(x) for x in feats]
         max_Tf = max(sizes) if sizes else 0
-        D = self.hidden_dim
+        # infer D from the first available feature
+        D = None
+        for b in range(B):
+            if feats[b]:
+                D = feats[b][0].numel()
+                break
+        if D is None:
+            D = self.hidden_dim
         out = torch.zeros(B, max_Tf, D, device=self.device)
         for b in range(B):
             if feats[b]:
-                fb = torch.stack(feats[b], dim=0)  # [Tb, D]
+                fb = torch.stack(feats[b], dim=0)  # [Tb, C]
                 out[b, :fb.size(0)] = fb
         return out

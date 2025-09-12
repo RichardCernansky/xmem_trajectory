@@ -49,35 +49,52 @@ def masks_from_t0(
     resize_hw: Tuple[int, int],
     classes_prefix: Tuple[str, ...] = ("vehicle.car", "vehicle.truck", "vehicle.bus"),
     max_K: int = 4,
+    target_inst_token: Optional[str] = None,   # <-- NEW (optional)
 ) -> Tuple[torch.Tensor, List[int]]:
-    img_path, boxes, K = nusc.get_sample_data(cam_sd_token, box_vis_level=0)
+    img_path, boxes, cam_K = nusc.get_sample_data(cam_sd_token, box_vis_level=0)
     im_bgr = cv2.imread(img_path)
     if im_bgr is None:
         raise FileNotFoundError(img_path)
     im_h, im_w = im_bgr.shape[:2]
     H, W = resize_hw
-    selected = []
+    cam_K = np.asarray(cam_K, dtype=np.float32)   # fix the old K-name bug
+
+    # Partition: pick target (if present) + nearest others
+    target_box = None
+    others = []
     for b in boxes:
         if any(b.name.startswith(p) for p in classes_prefix):
-            dist = float(np.linalg.norm(b.center))
-            selected.append((dist, b))
-    selected.sort(key=lambda x: x[0])
-    selected = [b for _, b in selected[:max_K]]
+            if (target_inst_token is not None) and getattr(b, "instance_token", None) == target_inst_token:
+                target_box = b
+            else:
+                dist = float(np.linalg.norm(b.center))
+                others.append((dist, b))
+    others.sort(key=lambda x: x[0])
+
+    pick = []
+    if target_box is not None:
+        pick.append(target_box)              # target first -> channel 0
+    for _, b in others:
+        if len(pick) >= max_K: break
+        pick.append(b)
+
     masks = []
-    for b in selected:
-        poly = _project_box_to_poly2d_safe(b, np.array(K, dtype=np.float32), im_w, im_h)
+    for b in pick:
+        poly = _project_box_to_poly2d_safe(b, cam_K, im_w, im_h)
         m = np.zeros((im_h, im_w), dtype=np.uint8)
         if poly is not None and len(poly) >= 3:
-            cv2.fillPoly(m, [poly], 1)
+            cv2.fillPoly(m, [poly.astype(np.int32)], 1)
         if (im_h, im_w) != (H, W):
             m = cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
         masks.append(torch.from_numpy(m).float())
+
     if len(masks) == 0:
+        # no eligible boxes; keep your previous behavior
         M = torch.ones(1, H, W, dtype=torch.float32)
         labels = [1]
     else:
-        M = torch.stack(masks, dim=0)
-        labels = list(range(1, M.size(0) + 1))
+        M = torch.stack(masks, dim=0)                 # [K,H,W] with target at channel 0 (if found)
+        labels = list(range(1, M.size(0) + 1))        # [1..K]
     return M, labels
 
 # -------------------- Dataset --------------------
@@ -184,6 +201,7 @@ class NuScenesSeqLoader(Dataset):
                 resize_hw=(H, W),
                 classes_prefix=self.classes_prefix,
                 max_K=self.max_K,
+                target_inst_token=e["target"]["agent_id"],   # <-- add this
             )
         else:
             init_masks = torch.zeros(0, H, W, dtype=torch.float32)
