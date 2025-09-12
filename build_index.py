@@ -25,7 +25,7 @@ def main():
     ap.add_argument("--min_speed_mps", type=float, default=0.0)
     ap.add_argument("--out_prefix", type=str, default="agents_index")
     # NEW: downsampling controls
-    ap.add_argument("--fraction", type=float, default=0.01, help="Fraction of rows to keep per split.")
+    ap.add_argument("--fraction", type=float, default=0.05, help="Fraction of rows to keep per split.")
     ap.add_argument("--seed", type=int, default=42, help="Random seed for reproducible sampling.")
     args = ap.parse_args()
 

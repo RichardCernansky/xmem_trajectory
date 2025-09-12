@@ -51,7 +51,7 @@ assumptions:
                     }
                 }
 
-*def xmem_backbone.step(frames, init_masks, init_labels):
+*def xmem_backbone.step(frames, lidar_maps, init_masks, init_labels):
     B, T, C, H, W = frames.shape # Batch, Timestamp, Channel, Height, Width
     all_features = []
     for b in range(B):
@@ -62,6 +62,8 @@ assumptions:
 
         for t in range(T):
             rgb = frames[b, t]
+            lid = lidar_maps[b, t] 
+            fused = self.fusion(rgb.unsqueeze(0), lid.unsqueeze(0)).squeeze(0)  # [3,H,W]
             if t == 0:
                 memory.set_labels(label0)
                 memory.step(rgb, m0, lab0, end=(t == T - 1)) #implicitly hook hidden features
@@ -83,7 +85,7 @@ assumptions:
 *Training:
     for n epochs:
         for batch in train_loader:
-            features = xmem_backbone.step(frames, init_masks, init_labels)
+            features = xmem_backbone.step(frames, lidar_maps, init_masks, init_labels)
             pred = head(features) # -> GRU -> Linear -> preds
             ade, fde, loss = ade_fde_loss(pred_abs, gt_future)
             optimizer.step()
@@ -97,3 +99,5 @@ assumptions:
     Epoch 2: ADE 7.497 | FDE 16.776
     Epoch 3: ADE 16.252 | FDE 33.031
     Epoch 4: ADE 4.241 | FDE 13.543
+
+# Notes for improvement

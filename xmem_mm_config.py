@@ -5,11 +5,12 @@ def xmem_mm_config(
     min_mid: int = 5, max_mid: int = 10,
     num_prototypes: int = 128,
     max_long_term: int = 10000,
-    enable_long_term: bool = True,
+    enable_long_term: bool = False,
     deep_update_every: int = 10**9,  # effectively disable deep update at t=0
     top_k: int = 30,
     single_object: bool = False,
     hidden_dim: int = 256,
+    enable_long_term_count_usage: bool = False
 ) -> Dict:
     return {
         "mem_every": mem_every,
@@ -21,7 +22,7 @@ def xmem_mm_config(
         "deep_update_every": deep_update_every,
         "top_k": top_k,
         "benchmark": False,
-        "enable_long_term_count_usage": False,
+        "enable_long_term_count_usage": enable_long_term_count_usage,
         "single_object": single_object,
         "hidden_dim": hidden_dim,
     }

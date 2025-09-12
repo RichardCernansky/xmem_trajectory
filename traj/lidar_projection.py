@@ -49,10 +49,10 @@ def project_points(points_xyz_i: np.ndarray, K: np.ndarray, T_cam_lidar: np.ndar
     inten = points_xyz_i[:, 3:4].T if points_xyz_i.shape[1] > 3 else np.ones((1, pts.shape[1]), dtype=pts.dtype)
     pc_cam = (T_cam_lidar @ _to_hom(pts))[:3]
     z = pc_cam[2]
-    mask = (z > 1e-6) & np.isfinite(z)
-    pc_cam = pc_cam[:, mask]
-    z = z[mask]
-    inten = inten[:, mask]
+    valid_z = (z > 1e-6) & np.isfinite(z)
+    pc_cam = pc_cam[:, valid_z]
+    z = z[valid_z]
+    inten = inten[:, valid_z]
     uvw = K @ pc_cam
     u = (uvw[0] / z).round().astype(np.int32)
     v = (uvw[1] / z).round().astype(np.int32)
