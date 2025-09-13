@@ -53,20 +53,61 @@ class XMemMMBackboneWrapper(nn.Module):
         self._hook = self.net.decoder.register_forward_hook(_grab_hidden)
 
     @staticmethod
-    def _masked_avg_pool5_single(hid: torch.Tensor, prob: torch.Tensor, ch: int, eps: float = 1e-6) -> torch.Tensor:
-        # hid:  [1,K,C,H,W]   prob: [1,K,Hm,Wm] or [K,Hm,Wm]
-        assert hid.dim() == 5, f"Expected hid [1,K,C,H,W], got {tuple(hid.shape)}"
+    def _masked_avg_pool_single(hid: torch.Tensor,
+                                prob: Optional[torch.Tensor],
+                                ch: int = 0,
+                                eps: float = 1e-6) -> torch.Tensor:
+        """
+        Soft masked average pooling for a single object/channel.
+        - hid:  [1,C,H,W]  OR  [1,K,C,H,W]
+        - prob: [1,K,Hm,Wm] OR [K,Hm,Wm]  (NO background channel). If None -> plain mean pool.
+        - ch:   target object's channel index (when K>1). For K=1 use ch=0.
+        Returns: [C]
+        """
+        # select the hidden slice
+        if hid.dim() == 5:
+            # [1,K,C,H,W] -> pick target channel
+            hid_sel = hid[:, ch]                        # [1,C,H,W]
+        elif hid.dim() == 4:
+            # shared map
+            hid_sel = hid                               # [1,C,H,W]
+        else:
+            raise RuntimeError(f"Unexpected hidden shape: {tuple(hid.shape)}")
+
+        # no mask available -> plain mean over H,W
+        if prob is None:
+            return hid_sel.mean(dim=(2, 3)).squeeze(0)  # [C]
+
+        # normalize prob shape to [1,K,Hm,Wm]
         if prob.dim() == 3:
-            prob = prob.unsqueeze(0)  # -> [1,K,Hm,Wm]
+            prob = prob.unsqueeze(0)
+        elif prob.dim() != 4:
+            raise RuntimeError(f"Unexpected prob shape: {tuple(prob.shape)}")
 
-        hid_ch = hid[:, ch]                 # [1,C,H,W]
-        m = prob[:, ch:ch+1]                # [1,1,Hm,Wm]
-        if m.shape[-2:] != hid_ch.shape[-2:]:
-            m = F.interpolate(m, size=hid_ch.shape[-2:], mode="bilinear", align_corners=False)
+        # pick target mask
+        if ch >= prob.size(1):
+            # safety: if ch out of range, fall back to mean
+            return hid_sel.mean(dim=(2, 3)).squeeze(0)
+        m = prob[:, ch:ch+1]                            # [1,1,Hm,Wm]
 
-        num = (hid_ch * m).sum(dim=(2, 3))  # [1,C]
-        den = m.sum(dim=(2, 3)).clamp_min(eps)  # [1,1]
-        return (num / den).squeeze(0)       # [C]
+        # device/dtype + resize to features
+        if m.device != hid_sel.device:
+            m = m.to(hid_sel.device)
+        if m.dtype != hid_sel.dtype:
+            m = m.to(hid_sel.dtype)
+        if m.shape[-2:] != hid_sel.shape[-2:]:
+            m = F.interpolate(m, size=hid_sel.shape[-2:], mode="bilinear", align_corners=False)
+
+        # masked average pooling
+        num = (hid_sel * m).sum(dim=(2, 3))            # [1,C]
+        den = m.sum(dim=(2, 3)).clamp_min(eps)         # [1,1]
+        out = (num / den).squeeze(0)                   # [C]
+
+        # last safety against NaN/Inf (e.g., empty mask after resize)
+        if not torch.isfinite(out).all():
+            return hid_sel.mean(dim=(2, 3)).squeeze(0)
+        return out
+
 
     # ---------------- engine mgmt ----------------
     def _ensure_capacity(self, B: int):
@@ -169,13 +210,13 @@ class XMemMMBackboneWrapper(nn.Module):
                         else:
                             _engine_step(eng, img, None, None, is_last=(t == T - 1))
                         hid = self._hidden_per_seq[b]
-                        if hid is None or hid.dim() != 5:
-                            raise RuntimeError(f"Decoder hook must return [1,K,C,H,W]; got {None if hid is None else tuple(hid.shape)}")
                         prob = getattr(eng, "prob", None)
+                        if hid is None:
+                            continue  # usually only at t=0
                         if prob is not None:
-                            feat = self._masked_avg_pool5_single(hid, prob, ch=0)   # weighted by the target’s soft mask
+                            feat = self._masked_avg_pool_single(hid, prob, ch=0)   # weighted by the target’s soft mask
                         else:
-                            feat = self._mean_pool5_single(hid, ch=0)               # plain mean over H,W (no mask available)
+                            feat = self._masked_avg_pool_single(hid,prob,  ch=0)               # plain mean over H,W (no mask available)
 
                         feats[b].append(feat)  # [C]          
                 else:

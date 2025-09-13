@@ -7,10 +7,19 @@ from nuscenes.utils.geometry_utils import BoxVisibility
 
 # ---------- helpers ----------
 
-def _is_instance_in_camera(nusc: NuScenes, cam_sd_token: str, inst_tok: str) -> bool:
-    _, boxes, _ = nusc.get_sample_data(cam_sd_token, box_vis_level=BoxVisibility.ANY)
-    return any(getattr(b, "instance_token", None) == inst_tok for b in boxes)
-
+def _is_instance_in_camera(nusc: NuScenes, cam_sd_token: str, inst_tok: str,
+                           vis: BoxVisibility = BoxVisibility.ANY) -> bool:
+    _, boxes, _ = nusc.get_sample_data(cam_sd_token, box_vis_level=vis)
+    for b in boxes:
+        # Prefer direct match if present
+        it = getattr(b, "instance_token", None)
+        if it is None:
+            # Map annotation token -> instance_token
+            ann = nusc.get('sample_annotation', b.token)
+            it = ann['instance_token']
+        if it == inst_tok:
+            return True
+    return False
 
 def _scene_tokens(nusc: NuScenes, scene_name: str) -> List[str]:
     """Ordered sample tokens for a scene name."""

@@ -2,6 +2,9 @@ import os, pickle, argparse, random
 from nuscenes.nuscenes import NuScenes
 from agent_index import build_agent_sequence_index
 
+
+PERCENTAGE = 5 # in %
+
 def _downsample(rows, frac: float, seed: int):
     if not rows:
         return rows
@@ -25,7 +28,7 @@ def main():
     ap.add_argument("--min_speed_mps", type=float, default=0.0)
     ap.add_argument("--out_prefix", type=str, default="agents_index")
     # NEW: downsampling controls
-    ap.add_argument("--fraction", type=float, default=0.005, help="Fraction of rows to keep per split.")
+    ap.add_argument("--fraction", type=float, default=PERCENTAGE/100, help="Fraction of rows to keep per split.")
     ap.add_argument("--seed", type=int, default=42, help="Random seed for reproducible sampling.")
     args = ap.parse_args()
 
