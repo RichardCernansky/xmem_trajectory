@@ -3,7 +3,7 @@ from nuscenes.nuscenes import NuScenes
 from agent_index import build_agent_sequence_index
 
 
-PERCENTAGE = 5 # in %
+PERCENTAGE = 1 # in %
 
 def _downsample(rows, frac: float, seed: int):
     if not rows:

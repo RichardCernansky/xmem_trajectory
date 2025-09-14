@@ -58,8 +58,7 @@ def run_epoch(backbone, head, loader, device, optimizer=None, mr_radius=2.0):
         gt_future = batch["traj"].to(device, non_blocking=True)
         last_pos = batch["last_pos"].to(device, non_blocking=True)
         if train_mode:
-            with torch.no_grad():
-                feats = backbone(frames, init_masks=init_masks, init_labels=init_labels, lidar_maps=lidar_maps)
+            feats = backbone(frames, init_masks=init_masks, init_labels=init_labels, lidar_maps=lidar_maps)
             pred_offsets = head(feats)
             pred_abs = last_pos.unsqueeze(1) + pred_offsets.cumsum(dim=1)
             ade, fde, loss = ade_fde_loss(pred_abs, gt_future)
@@ -99,6 +98,10 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=2, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_varK)
 
     xmem_core = load_xmem(device=device)
+    for p in xmem_core.parameters():
+        p.requires_grad = False
+    xmem_core.eval()
+
     mm_cfg = xmem_mm_config(hidden_dim=getattr(xmem_core, "hidden_dim", 256))
     backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device, n_lidar=5, fusion_mode="concat", use_bn=False).to(device)
     head = TrajectoryHead(d_in=getattr(xmem_core, "hidden_dim", 256), d_hid=256, horizon=30).to(device)

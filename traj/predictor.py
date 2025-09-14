@@ -135,7 +135,6 @@ class XMemMMBackboneWrapper(nn.Module):
             eng.last_mem_ti = -10_000
 
     # ---------------- forward ----------------
-    @torch.no_grad()
     def forward(
         self,
         frames: torch.Tensor,                      # [B,T,3,H,W]
@@ -224,21 +223,31 @@ class XMemMMBackboneWrapper(nn.Module):
 
         if torch.cuda.is_available() and self.device.type == "cuda":
             torch.cuda.synchronize()
-
-        # stack to [B, T_feat, D] with D inferred from the first non-empty list
+            
+        # Build [B, T_feat, D] without in-place assignment
         sizes = [len(x) for x in feats]
         max_Tf = max(sizes) if sizes else 0
-        # infer D from the first available feature
+
+        # Infer D from the first available feature vector
         D = None
         for b in range(B):
             if feats[b]:
-                D = feats[b][0].numel()
+                D = feats[b][0].shape[-1]   # feature dim
                 break
         if D is None:
             D = self.hidden_dim
-        out = torch.zeros(B, max_Tf, D, device=self.device)
+
+        seqs = []
         for b in range(B):
             if feats[b]:
-                fb = torch.stack(feats[b], dim=0)  # [Tb, C]
-                out[b, :fb.size(0)] = fb
+                fb = torch.stack(feats[b], dim=0)           # [Tb, D], keeps grad
+                pad = max_Tf - fb.size(0)
+                if pad > 0:
+                    fb = torch.cat([fb, fb.new_zeros(pad, fb.size(1))], dim=0)  # [max_Tf, D]
+            else:
+                fb = torch.zeros(max_Tf, D, device=self.device)                 # empty seq -> zeros
+            seqs.append(fb)
+
+        out = torch.stack(seqs, dim=0)  # [B, max_Tf, D]
         return out
+

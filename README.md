@@ -101,3 +101,13 @@ assumptions:
     Epoch 4: ADE 4.241 | FDE 13.543
 
 # Notes for improvement
+Backbone in the wrong mode - too much frozen
+lidar projection warnings
+early fusion in torch.no_grad()
+
+
+Strategies
+Early Fusing Strategy:
+    Concat -> 1x1 convolution
+Decoder output processing strategy:
+    Grab channel (zeroed index) of the target agent -> GRU -> MLP

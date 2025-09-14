@@ -45,19 +45,62 @@ def _to_hom(X: np.ndarray) -> np.ndarray:
     return X
 
 def project_points(points_xyz_i: np.ndarray, K: np.ndarray, T_cam_lidar: np.ndarray, img_w: int, img_h: int):
+    # Mulitple masking to check for NaN/Inf values
+
     pts = points_xyz_i[:, :3].T
     inten = points_xyz_i[:, 3:4].T if points_xyz_i.shape[1] > 3 else np.ones((1, pts.shape[1]), dtype=pts.dtype)
-    pc_cam = (T_cam_lidar @ _to_hom(pts))[:3]
+
+    # LiDAR -> camera
+    pc_cam = (T_cam_lidar @ _to_hom(pts))[:3]            # shape (3, N)
     z = pc_cam[2]
-    valid_z = (z > 1e-6) & np.isfinite(z)
-    pc_cam = pc_cam[:, valid_z]
-    z = z[valid_z]
-    inten = inten[:, valid_z]
+
+    # Guard everything: positive depth + all finite components
+    eps = 1e-6
+    finite_xyz = np.isfinite(pc_cam).all(axis=0)
+    valid_z = (z > eps) & np.isfinite(z)
+    keep0 = finite_xyz & valid_z
+    if not np.any(keep0):
+        return np.array([], np.int32), np.array([], np.int32), np.array([], np.float32), np.array([], np.float32), np.array([], np.float32)
+
+    pc_cam = pc_cam[:, keep0]
+    z = z[keep0]
+    inten = inten[:, keep0]
+
+    # Intrinsics projection
     uvw = K @ pc_cam
-    u = (uvw[0] / z).round().astype(np.int32)
-    v = (uvw[1] / z).round().astype(np.int32)
-    valid = (u >= 0) & (u < img_w) & (v >= 0) & (v < img_h)
-    return u[valid], v[valid], z[valid], inten.reshape(-1)[valid], pc_cam[1, valid]
+
+    # Safe division (float), no cast yet
+    u_f = np.divide(uvw[0], z, out=np.full_like(z, np.nan), where=z > eps)
+    v_f = np.divide(uvw[1], z, out=np.full_like(z, np.nan), where=z > eps)
+
+    # Round to nearest pixel as float
+    u_r = np.rint(u_f)
+    v_r = np.rint(v_f)
+
+    # Keep only finite & in-bounds pixels BEFORE casting
+    finite_uv = np.isfinite(u_r) & np.isfinite(v_r)
+    if not np.any(finite_uv):
+        return np.array([], np.int32), np.array([], np.int32), np.array([], np.float32), np.array([], np.float32), np.array([], np.float32)
+
+    u_r = u_r[finite_uv]
+    v_r = v_r[finite_uv]
+    z   = z[finite_uv]
+    inten = inten[:, finite_uv]
+    y_cam = pc_cam[1, finite_uv]
+
+    inb = (u_r >= 0) & (u_r < img_w) & (v_r >= 0) & (v_r < img_h)
+    if not np.any(inb):
+        return np.array([], np.int32), np.array([], np.int32), np.array([], np.float32), np.array([], np.float32), np.array([], np.float32)
+
+    # Finally cast after filtering
+    u = u_r[inb].astype(np.int32)
+    v = v_r[inb].astype(np.int32)
+    z = z[inb].astype(np.float32)
+    inten = inten.reshape(-1)[inb].astype(np.float32)
+    y_cam = y_cam[inb].astype(np.float32)
+
+    return u, v, z, inten, y_cam
+
 
 def rasterize(u, v, z, intensity, y_cam, H, W, max_depth=80.0, h_min=-2.0, h_max=4.0, count_clip=5):
     depth = np.full((H, W), np.inf, dtype=np.float32)
