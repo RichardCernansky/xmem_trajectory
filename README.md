@@ -111,3 +111,9 @@ Early Fusing Strategy:
     Concat -> 1x1 convolution
 Decoder output processing strategy:
     Grab channel (zeroed index) of the target agent -> GRU -> MLP
+t==0 hidden strategy (no mask produced):
+    Grab the key
+
+
+Rafactoring into grad flow through xmem:
+    1. Start simple: first verify training works on the default stream only (set use_streams=False). Once ADE/FDE drop, enable streams.

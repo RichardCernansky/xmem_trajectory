@@ -13,7 +13,7 @@ class TrajectoryHead(nn.Module):
         self.gru = nn.GRU(input_size=d_in, hidden_size=d_hid, batch_first=True)
         self.mlp = nn.Sequential(
             nn.Linear(d_hid, d_hid),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Linear(d_hid, 2 * horizon),
         )
 
