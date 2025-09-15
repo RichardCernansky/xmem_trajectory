@@ -109,6 +109,7 @@ early fusion in torch.no_grad()
 Strategies
 Early Fusing Strategy:
     Concat -> 1x1 convolution
+    Or projection() -> sum
 Decoder output processing strategy:
     Grab channel (zeroed index) of the target agent -> GRU -> MLP
 t==0 hidden strategy (no mask produced):
