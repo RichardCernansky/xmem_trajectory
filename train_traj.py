@@ -106,17 +106,53 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=2, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_varK)
 
     xmem_core = load_xmem(device=device)
+    # MR. FREEZE
+    # 0) freeze everything by default
     for p in xmem_core.parameters():
         p.requires_grad = False
-    xmem_core.eval()
+
+    # 1) unfreeze decoder only
+    for n, p in xmem_core.decoder.named_parameters():
+        p.requires_grad = True
+
+    # (keep encoders eval; put decoder in train)
+    xmem_core.decoder.train()
+    xmem_core.key_encoder.eval()
+    xmem_core.value_encoder.eval()
+
+    # 2) optimizer with param groups
+
+    # (later) to unfreeze value encoder:
+    # for p in xmem_core.value_encoder.parameters(): p.requires_grad = True
+    # and add a new param group with lr ~ 5e-6 – 1e-5
+
+    # (last) to unfreeze key encoder:
+    # for p in xmem_core.key_encoder.parameters(): p.requires_grad = True
+    # add with lr ~ 1e-6 – 5e-6 (smallest)
 
     mm_cfg = xmem_mm_config(hidden_dim=getattr(xmem_core, "hidden_dim", 256))
     backbone = XMemMMBackboneWrapper(mm_cfg=mm_cfg, xmem=xmem_core, device=device, n_lidar=5, fusion_mode="concat", use_bn=False).to(device)
     head = TrajectoryHead(d_in=getattr(xmem_core, "hidden_dim", 256), d_hid=256, horizon=30).to(device)
 
-    optim_all = optim.AdamW([p for p in list(backbone.parameters()) + list(head.parameters()) if p.requires_grad], lr=1e-3)
+    # optim_all = optim.AdamW([p for p in list(backbone.parameters()) + list(head.parameters()) if p.requires_grad], lr=1e-3)
+    optim_all = torch.optim.AdamW([
+        {"params": backbone.fusion.parameters(), "lr": 1e-3, "weight_decay": 1e-4},
+        {"params": head.parameters(),           "lr": 1e-3, "weight_decay": 1e-4},
+        {"params": xmem_core.decoder.parameters(), "lr": 1e-5, "weight_decay": 1e-5},  # tiny LR
+    ], betas=(0.9, 0.999))
 
     hist = {"epoch": [], "train_ADE": [], "train_FDE": [], "val_ADE": [], "val_FDE": [], "val_MR2": []}
+
+    # 3) <-- PUT THE CHECKS HERE
+    def count_params(ps): return sum(p.numel() for p in ps)
+    groups = []
+    groups.append(list(head.parameters()))
+    groups.append(list(backbone.parameters()))
+    print("head trainable:", count_params([p for p in groups[0] if p.requires_grad]))
+    print("backbone trainable:", count_params([p for p in groups[1] if p.requires_grad]))
+    assert any(p.requires_grad for p in groups[0]) or any(p.requires_grad for p in groups[1]), \
+        "No trainable params in head/fusion!"
+
 
     epochs = 20
     for ep in range(epochs):

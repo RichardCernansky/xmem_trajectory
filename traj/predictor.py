@@ -54,7 +54,7 @@ class XMemMMBackboneWrapper(nn.Module):
 
         # train/freeze mode for XMem
         self.tune_xmem = tune_xmem
-        self._set_xmem_mode()
+        # self._set_xmem_mode()
 
     def _set_xmem_mode(self):
         if self.tune_xmem:
