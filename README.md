@@ -118,3 +118,22 @@ t==0 hidden strategy (no mask produced):
 
 Rafactoring into grad flow through xmem:
     1. Start simple: first verify training works on the default stream only (set use_streams=False). Once ADE/FDE drop, enable streams.
+
+
+Azure setup
+
+az account show --query id -o tsv
+SUB="<paste the id>"
+RG="rg-ml"
+LOC="westeurope"
+WS="ws-ml"
+
+az account set --subscription "$SUB"
+az group create -n "$RG" -l "$LOC"
+az ml workspace create -n "$WS" -g "$RG"
+# Optional defaults to reduce typing:
+az configure --defaults group=$RG workspace=$WS location=$LOC
+
+az ml compute create --name dev-ci --type computeinstance --size Standard_DS3_v2
+
+az ml compute create --name gpu-cluster --type amlcompute --min-instances 0 --max-instances 1 --size Standard_NC6s_v3
