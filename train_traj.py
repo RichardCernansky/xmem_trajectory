@@ -57,16 +57,11 @@ def run_epoch(backbone, head, loader, device, optimizer=None, mr_radius=2.0):
         init_labels = batch["init_labels"]
         gt_future = batch["traj"].to(device, non_blocking=True)
         last_pos = batch["last_pos"].to(device, non_blocking=True)
-
-        print("frames:", frames.device, "lidar:", lidar_maps.device)
-        print("gt_future:", gt_future.device, "last_pos:", last_pos.device)
             
         if train_mode:
             feats = backbone(frames, init_masks=init_masks, init_labels=init_labels, lidar_maps=lidar_maps)
 
-            print("feats.shape:", feats.shape)   # expect [B, T, 64]
-            print("feats:", feats.device)
-
+        
             pred_offsets = head(feats)
             pred_abs = last_pos.unsqueeze(1) + pred_offsets.cumsum(dim=1)
             ade, fde, loss = ade_fde_loss(pred_abs, gt_future)
@@ -99,11 +94,11 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     nusc = NuScenes(version="v1.0-trainval", dataroot=r"e:\nuscenes", verbose=False)
 
-    train_ds = NuScenesSeqLoader(index_path="train_agents_index.pkl", resize=True, resize_wh=(960, 540), nusc=nusc)
-    val_ds = NuScenesSeqLoader(index_path="val_agents_index.pkl", resize=True, resize_wh=(960, 540), nusc=nusc)
+    train_ds = NuScenesSeqLoader(index_path="train_agents_index.pkl", resize=True, resize_wh=(640, 384), nusc=nusc)
+    val_ds = NuScenesSeqLoader(index_path="val_agents_index.pkl", resize=True, resize_wh=(640, 384), nusc=nusc)
 
-    train_loader = DataLoader(train_ds, batch_size=2, shuffle=True, num_workers=4, pin_memory=True, collate_fn=collate_varK)
-    val_loader = DataLoader(val_ds, batch_size=2, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_varK)
+    train_loader = DataLoader(train_ds, batch_size=4, shuffle=True, num_workers=4, pin_memory=True, collate_fn=collate_varK)
+    val_loader = DataLoader(val_ds, batch_size=4, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_varK)
 
     xmem_core = load_xmem(device=device)
     # MR. FREEZE

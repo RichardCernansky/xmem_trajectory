@@ -21,7 +21,7 @@ def main():
     ap.add_argument("--dataroot", type=str, default=r"e:\nuscenes")
     ap.add_argument("--version", type=str, default="v1.0-trainval")
     ap.add_argument("--camera", type=str, default="CAM_FRONT")
-    ap.add_argument("--t_in", type=int, default=8)
+    ap.add_argument("--t_in", type=int, default=3)
     ap.add_argument("--t_out", type=int, default=30)
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--min_future", type=int, default=30)
