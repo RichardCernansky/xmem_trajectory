@@ -56,12 +56,12 @@ class XMemMMBackboneWrapper(nn.Module):
         self.tune_xmem = tune_xmem
         # self._set_xmem_mode()
 
+    # in XMemMMBackboneWrapper
     def _set_xmem_mode(self):
+        # Only set module mode; do NOT touch requires_grad here
         if self.tune_xmem:
             self.net.train()
         else:
-            for p in self.net.parameters():
-                p.requires_grad = False
             self.net.eval()
 
     def train(self, mode: bool = True):
@@ -145,6 +145,7 @@ class XMemMMBackboneWrapper(nn.Module):
                 lab0 = init_labels[b]
                 if torch.is_tensor(lab0):
                     lab0 = [int(x) for x in lab0.tolist()]
+        
             if m0 is None:
                 m0 = torch.ones(1, H, W, dtype=frames.dtype, device=self.device)
                 lab0 = [1]
@@ -254,8 +255,10 @@ class XMemMMBackboneWrapper(nn.Module):
 
                 # feature for trajectory head (consistent 64-D)
                 if (pred_prob_with_bg is not None) and isinstance(hidden_local, torch.Tensor):
+                    print("using avg pool")
                     feat = self._masked_avg_pool_single(hidden_local, prob_no_bg_for_pool, ch=0)  # [C^h=64]
                 else:
+                    
                     feat = key.mean(dim=(2, 3)).squeeze(0)  # fallback: [C^k=64]
                 feats[b].append(feat)
 
