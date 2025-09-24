@@ -1,4 +1,4 @@
-# viz_seq_triptych_lidar_gain_thick_fixed.py
+# viz_mask0_lidar_rgboverlay.py
 import os, sys
 import numpy as np
 import torch
@@ -23,7 +23,7 @@ BATCH_SIZE = 1
 NUM_SAMPLES = 10
 SHOW = True
 SAVE_DIR = r"C:\Users\Lukas\richard\xmem_e2e\viz_out_triptych_gain_thick"
-os.makedirs(SAVE_DIR, exist_ok=True)   # ensure once, at import
+os.makedirs(SAVE_DIR, exist_ok=True)
 # ------------------------------------------
 
 # ============================ helpers ============================
@@ -44,7 +44,6 @@ def masks_to_color_overlay(base_rgb_u8: np.ndarray, masks_torch: torch.Tensor | 
     if masks_torch is None or not hasattr(masks_torch, "numel") or masks_torch.numel() == 0:
         return base_rgb_u8
     K = masks_torch.shape[0]
-    # --- FIX: colormap API ---
     cmap = matplotlib.colormaps["tab10"].resampled(max(10, K))
     color = np.zeros((H, W, 3), dtype=np.float32)
     m_np = masks_torch.detach().cpu().numpy()
@@ -55,7 +54,27 @@ def masks_to_color_overlay(base_rgb_u8: np.ndarray, masks_torch: torch.Tensor | 
     out = (1 - alpha) * base + alpha * np.clip(color, 0, 1)
     return (out.clip(0,1) * 255).astype(np.uint8)
 
-# -------- LiDAR mapper with GAIN + THICKENING (and new colormap API) --------
+def _extract_mask0_t0(masksL):
+    """
+    Returns HxW float32 mask for the first instance (mask[0]) at t=0.
+    Accepts either a Tensor [K,H,W] or [T,K,H,W], or a list/tuple wrapping that tensor.
+    """
+    if masksL is None:
+        return None
+    m = masksL[0] if isinstance(masksL, (list, tuple)) and len(masksL) > 0 else masksL
+    if not torch.is_tensor(m) or m.numel() == 0:
+        return None
+    if m.dim() == 4:  # [T,K,H,W]
+        m = m[0]      # t=0 -> [K,H,W]
+    if m.dim() != 3 or m.shape[0] < 1:
+        return None
+    mask0 = m[0]      # first instance -> [H,W]
+    mask0 = mask0.detach().cpu().float().numpy()
+    if mask0.max() > 1.0:
+        mask0 = (mask0 > 0.5).astype(np.float32)
+    return mask0
+
+# -------- LiDAR mapper with GAIN + THICKENING --------
 def lidar_to_rgb_with_gain(channel,
                            occ,
                            cmap_name="turbo",
@@ -70,7 +89,6 @@ def lidar_to_rgb_with_gain(channel,
     occ:     HxW {0,1}
     returns: HxW x 3 uint8 RGB
     """
-    # lazy import cv2 (optional)
     try:
         import cv2
     except Exception:
@@ -94,7 +112,6 @@ def lidar_to_rgb_with_gain(channel,
     x = np.power(x, gamma)
     x = np.clip(x * gain, 0.0, 1.0)
 
-    # thicken points
     if cv2 is not None and thicken_px > 0 and thicken_iters > 0:
         k = 2 * thicken_px + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -103,30 +120,35 @@ def lidar_to_rgb_with_gain(channel,
             occ_thick = cv2.dilate(occ_thick, kernel, iterations=1)
         x = np.where(occ_thick > 0, x, 0.0)
 
-    # --- FIX: colormap API ---
     cmap = matplotlib.colormaps.get_cmap(cmap_name)
     rgba = cmap(np.nan_to_num(x, nan=0.0))
     rgb = (rgba[..., :3] * 255.0).astype(np.uint8)
     return rgb
 # ---------------------------------------------------------------------------
 
-def visualize_triptych_t0(batch,
-                          lidar_channel="depth",
-                          cmap="turbo",
-                          invert=True,
-                          q_low=0.5, q_high=99.7,
-                          gamma=0.45,
-                          gain=2.8,
-                          thicken_px=4,
-                          thicken_iters=2,
-                          title_prefix=""):
+def visualize_triptych_mask0(batch,
+                             nusc,
+                             lidar_channel="depth",
+                             cmap="turbo",
+                             invert=True,
+                             q_low=0.5, q_high=99.7,
+                             gamma=0.45,
+                             gain=2.8,
+                             thicken_px=4,
+                             thicken_iters=2,
+                             title_prefix=""):
     frames     = batch["frames"]
     lidar_maps = batch["lidar_maps"]
     masksL     = batch.get("init_masks", None)
+    target_id = batch.get("meta", None)[0]["target"]["agent_id"]
+    instance_tok = nusc.get('instance', target_id)
+    category = nusc.get('category', instance_tok['category_token'])
+    print("CATEGORY:", category)
 
     b, t = 0, 0
     rgb = to_np_img(frames[b, t])
 
+    # LiDAR prep
     lmap = lidar_maps[b, t].detach().cpu().numpy()
     depth_n, height_n, inten_n, count_n, occ = lmap
 
@@ -152,14 +174,29 @@ def visualize_triptych_t0(batch,
         thicken_iters=thicken_iters
     )
 
-    masks0 = masksL[0] if isinstance(masksL, (list, tuple)) and len(masksL) > 0 else (masksL if torch.is_tensor(masksL) else None)
-    rgb_masks = masks_to_color_overlay(rgb, masks0, alpha=0.4) if masks0 is not None else rgb
+    # mask[0] @ t=0
+    mask0 = _extract_mask0_t0(masksL)  # HxW float32 in [0,1]
+    if mask0 is None:
+        return None
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4), squeeze=False)
-    axes[0, 0].imshow(rgb);            axes[0, 0].set_title("RGB t=0")
-    axes[0, 1].imshow(lidar_rgb);      axes[0, 1].set_title(f"LiDAR-only ({lidar_channel})")
-    axes[0, 2].imshow(rgb_masks);      axes[0, 2].set_title("RGB + t0 masks")
-    for ax in axes[0]: ax.axis("off")
+    # RGB + mask[0] overlay (only the first instance)
+    mask0_torch = torch.from_numpy(mask0[None, ...])  # [1,H,W]
+    rgb_overlay = masks_to_color_overlay(rgb, mask0_torch, alpha=0.6)
+
+    # ---- Plot: [mask0, LiDAR, RGB+overlay] ----
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4), squeeze=False)
+
+    axes[0, 0].imshow(mask0, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+    axes[0, 0].set_title("mask[0] @ t=0")
+
+    axes[0, 1].imshow(lidar_rgb)
+    axes[0, 1].set_title(f"LiDAR ({lidar_channel})")
+
+    axes[0, 2].imshow(rgb_overlay)
+    axes[0, 2].set_title("RGB + mask[0] overlay")
+
+    for ax in axes[0]:
+        ax.axis("off")
 
     cov = float(occ.sum()) / (occ.shape[0] * occ.shape[1])
     fig.suptitle(f"{title_prefix}  LiDAR cov={cov:.2%}  |  channel={lidar_channel}", y=0.98)
@@ -190,8 +227,10 @@ def main():
         except StopIteration:
             break
 
-        fig = visualize_triptych_t0(
+        fig = visualize_triptych_mask0(
+
             batch,
+            nusc,
             lidar_channel="depth",
             cmap="turbo",
             invert=True,
@@ -201,9 +240,14 @@ def main():
             thicken_px=6,
             thicken_iters=3,
             title_prefix=f"Seq #{i}"
+        
         )
-        out_path = os.path.join(SAVE_DIR, f"seq_{i:03d}_t0_triptych_gain_thick.png")
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)   # <-- ensure dir exists right now
+        if fig is None:
+            print(f"Seq #{i}: no mask[0] available")
+            continue
+
+        out_path = os.path.join(SAVE_DIR, f"seq_{i:03d}_mask0_lidar_rgboverlay.png")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
         fig.savefig(out_path, dpi=150)
         if SHOW:
             plt.show()

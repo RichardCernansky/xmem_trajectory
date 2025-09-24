@@ -22,9 +22,9 @@ def main():
     ap.add_argument("--version", type=str, default="v1.0-trainval")
     ap.add_argument("--camera", type=str, default="CAM_FRONT")
     ap.add_argument("--t_in", type=int, default=3)
-    ap.add_argument("--t_out", type=int, default=30)
+    ap.add_argument("--t_out", type=int, default=10)
     ap.add_argument("--stride", type=int, default=1)
-    ap.add_argument("--min_future", type=int, default=30)
+    ap.add_argument("--min_future", type=int, default=10)
     ap.add_argument("--min_speed_mps", type=float, default=0.0)
     ap.add_argument("--out_prefix", type=str, default="agents_index")
     # NEW: downsampling controls
