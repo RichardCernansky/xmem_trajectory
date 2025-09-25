@@ -109,7 +109,7 @@ def build_agent_sequence_index(
     scene_names: Optional[List[str]] = None,   # if provided, overrides splits
     cam: str = "CAM_FRONT",
     t_in: int = 8,
-    t_out: int = 30,
+    t_out: int = 10,
     stride: int = 1,
     min_future: Optional[int] = None,          # require at least N future steps (<= t_out)
     min_speed_mps: float = 0.0,                # skip near-stationary targets if > 0
@@ -237,5 +237,9 @@ def build_agent_sequence_index(
                     },
                     "dataroot": dataroot or ""           # helps loaders rebuild NuScenes if needed
                 })
+
+                if len(rows) == 2000:
+                    return rows
+
 
     return rows
