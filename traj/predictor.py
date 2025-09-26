@@ -128,11 +128,11 @@ class XMemMMBackboneWrapper(nn.Module):
 
                 rgb = frames[b, t]                      # [3,H,W]
                 # inside backbone forward, right after: rgb = frames[b, t]  # [3,H,W]
-                if rgb.dtype == torch.uint8:
-                    rgb = rgb.float() / 255.0
-                mean = torch.tensor([0.485,0.456,0.406], device=rgb.device)[:,None,None]
-                std  = torch.tensor([0.229,0.224,0.225], device=rgb.device)[:,None,None]
-                rgb = (rgb - mean) / std
+                # if rgb.dtype == torch.uint8:
+                #     rgb = rgb.float() / 255.0
+                # mean = torch.tensor([0.485,0.456,0.406], device=rgb.device)[:,None,None]
+                # std  = torch.tensor([0.229,0.224,0.225], device=rgb.device)[:,None,None]
+                # rgb = (rgb - mean) / std
 
                 img_pad, _ = pad_divide_by(rgb, 16)
                 img_pad = img_pad.unsqueeze(0)          # [1,3,H',W']

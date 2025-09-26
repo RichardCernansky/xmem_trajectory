@@ -1,229 +1,14 @@
-# traj/datamodules.py
-from typing import Any, Dict, List, Tuple, Optional
-
-import pickle
-import cv2
+from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from PIL import Image
 from nuscenes.nuscenes import NuScenes
-from nuscenes.utils.geometry_utils import view_points
-from nuscenes.utils.data_classes import LidarPointCloud
-from traj.lidar_projection import lidar_to_2d_maps, adjust_intrinsics
+from nuscenes.utils.geometry_utils import BoxVisibility
 
-# -------------------- image helpers --------------------
-def _load_and_resize_rgb(path: str, hw: Tuple[int, int]) -> torch.Tensor:
-    im = cv2.imread(path)
-    if im is None:
-        raise FileNotFoundError(path)
-    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-    H, W = hw
-    im = cv2.resize(im, (W, H), interpolation=cv2.INTER_LINEAR)
-    t = torch.from_numpy(im).permute(2, 0, 1).float() / 255.0
-    return t
 
-# -------------------- mask helpers (t=0 only) --------------------
-def _project_box_to_poly2d_safe(box, cam_K: np.ndarray, im_w: int, im_h: int) -> Optional[np.ndarray]:
-    corners_3d = box.corners()  # (3, 8)
-    z = corners_3d[2, :]
-    valid = z > 1e-6
-    if valid.sum() < 3:
-        return None
-    corners_3d = corners_3d[:, valid]
-    pts = view_points(corners_3d, cam_K, normalize=True)[:2, :].T
-    if not np.isfinite(pts).all():
-        pts = pts[np.isfinite(pts).all(axis=1)]
-    if pts.shape[0] < 3:
-        return None
-    pts[:, 0] = np.clip(pts[:, 0], 0, im_w - 1)
-    pts[:, 1] = np.clip(pts[:, 1], 0, im_h - 1)
-    pts_cv = np.ascontiguousarray(pts, dtype=np.float32).reshape(-1, 1, 2)
-    hull = cv2.convexHull(pts_cv).reshape(-1, 2).astype(np.int32)
-    if hull.shape[0] < 3:
-        return None
-    return hull
-
-def masks_from_t0(
-    nusc: NuScenes,
-    cam_sd_token: str,
-    resize_hw: Tuple[int, int],
-    classes_prefix: Tuple[str, ...] = ("vehicle.car", "vehicle.truck", "vehicle.bus"),
-    max_K: int = 4,
-    target_inst_token: Optional[str] = None,   # <-- NEW (optional)
-) -> Tuple[torch.Tensor, List[int]]:
-    img_path, boxes, cam_K = nusc.get_sample_data(cam_sd_token, box_vis_level=0)
-    im_bgr = cv2.imread(img_path)
-    if im_bgr is None:
-        raise FileNotFoundError(img_path)
-    im_h, im_w = im_bgr.shape[:2]
-    H, W = resize_hw
-    cam_K = np.asarray(cam_K, dtype=np.float32)   # fix the old K-name bug
-
-    # Partition: pick target (if present) + nearest others
-    target_box = None
-    others = []
-    for b in boxes:
-        if any(b.name.startswith(p) for p in classes_prefix):
-            if (target_inst_token is not None) and getattr(b, "instance_token", None) == target_inst_token:
-                target_box = b
-            else:
-                dist = float(np.linalg.norm(b.center))
-                others.append((dist, b))
-    others.sort(key=lambda x: x[0])
-
-    pick = []
-    if target_box is not None:
-        pick.append(target_box)              # target first -> channel 0
-    for _, b in others:
-        if len(pick) >= max_K: break
-        pick.append(b)
-
-    masks = []
-    for b in pick:
-        poly = _project_box_to_poly2d_safe(b, cam_K, im_w, im_h)
-        m = np.zeros((im_h, im_w), dtype=np.uint8)
-        if poly is not None and len(poly) >= 3:
-            cv2.fillPoly(m, [poly.astype(np.int32)], 1)
-        if (im_h, im_w) != (H, W):
-            m = cv2.resize(m, (W, H), interpolation=cv2.INTER_NEAREST)
-        masks.append(torch.from_numpy(m).float())
-
-    if len(masks) == 0:
-        # no eligible boxes; keep your previous behavior
-        M = torch.ones(1, H, W, dtype=torch.float32)
-        labels = [1]
-    else:
-        M = torch.stack(masks, dim=0)                 # [K,H,W] with target at channel 0 (if found)
-        labels = list(range(1, M.size(0) + 1))        # [1..K]
-    return M, labels
-
-# -------------------- Dataset --------------------
-class NuScenesSeqLoader(Dataset):
-    """
-    Expects index rows to include: img_paths, intrinsics, lidar_paths, T_cam_lidar,
-    cam_sd_tokens, obs_sample_tokens, fut_sample_tokens, target{last_xy,future_xy}.
-    """
-    def __init__(
-        self,
-        index_path: str,
-        resize: bool = False,
-        resize_wh: Tuple[int, int] = (960, 540),      # (W, H)
-        nusc: Optional[NuScenes] = None,              # if provided, we build t=0 masks
-        classes_prefix: Tuple[str, ...] = ("vehicle.car", "vehicle.truck", "vehicle.bus"),
-        max_K: int = 4,
-        lidar_max_depth: float = 80.0,
-        lidar_h_min: float = -2.0,
-        lidar_h_max: float = 4.0,
-        lidar_count_clip: float = 5.0,
-    ):
-        super().__init__()
-        with open(index_path, "rb") as f:
-            self.index: List[Dict[str, Any]] = pickle.load(f)
-
-        self.resize = resize
-        self.resize_wh = resize_wh
-        self.nusc = nusc
-        self.classes_prefix = classes_prefix
-        self.max_K = max_K
-
-        self.lidar_max_depth = lidar_max_depth
-        self.lidar_h_min = lidar_h_min
-        self.lidar_h_max = lidar_h_max
-        self.lidar_count_clip = lidar_count_clip
-
-        assert len(self.index) > 0, "Empty index file."
-        req = {"img_paths","intrinsics","lidar_paths","T_cam_lidar","cam_sd_tokens","target"}
-        missing = req - set(self.index[0].keys())
-        if missing:
-            raise KeyError(f"Index entries missing keys: {missing}")
-        self.t_in  = len(self.index[0]["img_paths"])
-        self.t_out = len(self.index[0]["target"]["future_xy"])
-
-    def __len__(self) -> int:
-        return len(self.index)
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        e = self.index[idx]
-
-        # determine output size
-        im0 = cv2.imread(e["img_paths"][0])
-        if im0 is None:
-            raise FileNotFoundError(e["img_paths"][0])
-        orig_h0, orig_w0 = im0.shape[:2]
-        if self.resize:
-            W, H = self.resize_wh
-        else:
-            W, H = orig_w0, orig_h0
-
-        # RGB frames
-        frames = torch.zeros(self.t_in, 3, H, W, dtype=torch.float32)
-        for t, p in enumerate(e["img_paths"]):
-            if self.resize:
-                frames[t] = _load_and_resize_rgb(p, (H, W))
-            else:
-                # keep native; convert to tensor
-                im = cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB)
-                timg = torch.from_numpy(im).permute(2, 0, 1).float() / 255.0
-                frames[t] = timg
-
-        # LiDAR maps
-        lidar_maps = torch.zeros(self.t_in, 5, H, W, dtype=torch.float32)
-        for t, (img_p, K_list, lidar_p, T_list) in enumerate(
-            zip(e["img_paths"], e["intrinsics"], e["lidar_paths"], e["T_cam_lidar"])
-        ):
-            im_bgr = cv2.imread(img_p)
-            if im_bgr is None:
-                raise FileNotFoundError(img_p)
-            im_h, im_w = im_bgr.shape[:2]
-            K = np.asarray(K_list, dtype=np.float32)
-            if self.resize:
-                K = adjust_intrinsics(K, (im_w, im_h), (W, H))
-            pc = LidarPointCloud.from_file(lidar_p).points.T  # [N,4] xyz,i
-            T_cl = np.asarray(T_list, dtype=np.float32)
-            maps = lidar_to_2d_maps(
-                points_xyz_i=pc,
-                K=K,
-                T_cam_lidar=T_cl,
-                W=W, H=H,
-                max_depth=self.lidar_max_depth,
-                h_min=self.lidar_h_min,
-                h_max=self.lidar_h_max,
-                count_clip=self.lidar_count_clip,
-            )
-            lidar_maps[t] = maps
-
-        # masks at t=0 (optional)
-        if self.nusc is not None:
-            cam_sd_t0 = e["cam_sd_tokens"][0]
-            init_masks, init_labels = masks_from_t0(
-                nusc=self.nusc,
-                cam_sd_token=cam_sd_t0,
-                resize_hw=(H, W),
-                classes_prefix=self.classes_prefix,
-                max_K=self.max_K,
-                target_inst_token=e["target"]["agent_id"],   # <-- add this
-            )
-        else:
-            init_masks = torch.zeros(0, H, W, dtype=torch.float32)
-            init_labels: List[int] = []
-
-        traj = torch.tensor(e["target"]["future_xy"], dtype=torch.float32)  # [T_out,2]
-        last = torch.tensor(e["target"]["last_xy"], dtype=torch.float32)    # [2]
-
-        return {
-            "frames": frames,             # [T_in,3,H,W]
-            "lidar_maps": lidar_maps,     # [T_in,5,H,W]
-            "traj": traj,                 # [T_out,2]
-            "last_pos": last,             # [2]
-            "init_masks": init_masks,     # [K,H,W]
-            "init_labels": init_labels,   # list[int]
-            "meta": e,
-        }
-
-# -------------------- collate for variable-K masks --------------------
 def collate_varK(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     frames = torch.stack([b["frames"] for b in batch], dim=0)      # [B,T,3,H,W]
-    lidar  = torch.stack([b["lidar_maps"] for b in batch], dim=0)  # [B,T,5,H,W]
     traj   = torch.stack([b["traj"] for b in batch], dim=0)        # [B,T_out,2]
     last   = torch.stack([b["last_pos"] for b in batch], dim=0)    # [B,2]
     init_masks  = [b["init_masks"] for b in batch]
@@ -231,10 +16,153 @@ def collate_varK(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     meta = [b["meta"] for b in batch]
     return {
         "frames": frames,
-        "lidar_maps": lidar,
         "traj": traj,
         "last_pos": last,
         "init_masks": init_masks,
         "init_labels": init_labels,
         "meta": meta,
     }
+
+class NuScenesSeqLoader(Dataset):
+    def __init__(
+        self,
+        nusc: NuScenes,
+        rows: List[Dict[str, Any]],
+        out_size: Tuple[int, int] = (360, 640),   # (H, W) per camera view
+        img_normalize: bool = True,
+        dtype: torch.dtype = torch.float32,
+    ):
+        self.nusc = nusc
+        self.rows = rows
+        self.H, self.W = int(out_size[0]), int(out_size[1])
+        self.normalize = img_normalize
+        self.dtype = dtype
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    @staticmethod
+    def _find_box_for_instance(nusc: NuScenes, sd_token: str, inst_tok: str):
+        # was: box_vis_level=None  -> invalid
+        _, boxes, _ = nusc.get_sample_data(sd_token, box_vis_level=BoxVisibility.ANY)
+        for b in boxes:
+            it = getattr(b, "instance_token", None)
+            if it is None:
+                ann = nusc.get('sample_annotation', b.token)
+                it = ann['instance_token']
+            if it == inst_tok:
+                return b
+        return None
+
+    @staticmethod
+    def _project_corners(K: np.ndarray, corners_cam: np.ndarray) -> np.ndarray:
+        uvw = K @ corners_cam[:3, :]
+        uv = uvw[:2, :] / np.clip(uvw[2:3, :], 1e-6, None)
+        return uv  # [2,8]
+
+    def _mask_from_box(
+        self,
+        nusc: NuScenes,
+        sd_token: str,
+        inst_tok: str,
+        K: np.ndarray,
+        target_hw: Tuple[int, int],
+        orig_wh: Tuple[int, int],
+    ) -> np.ndarray:
+        box = self._find_box_for_instance(nusc, sd_token, inst_tok)
+        if box is None:
+            return np.zeros((target_hw[0], target_hw[1]), dtype=np.uint8)
+
+        corners = box.corners()  # [3,8] in camera frame
+        uv = self._project_corners(K, corners)  # [2,8]
+        u_min, v_min = np.min(uv, axis=1)
+        u_max, v_max = np.max(uv, axis=1)
+
+        ow, oh = orig_wh
+        u_min = float(np.clip(u_min, 0, ow - 1))
+        v_min = float(np.clip(v_min, 0, oh - 1))
+        u_max = float(np.clip(u_max, 0, ow - 1))
+        v_max = float(np.clip(v_max, 0, oh - 1))
+        if u_max <= u_min or v_max <= v_min:
+            return np.zeros((target_hw[0], target_hw[1]), dtype=np.uint8)
+
+        th, tw = target_hw
+        sx = tw / ow
+        sy = th / oh
+        x0 = int(np.floor(u_min * sx))
+        y0 = int(np.floor(v_min * sy))
+        x1 = int(np.ceil (u_max * sx))
+        y1 = int(np.ceil (v_max * sy))
+        x0 = max(0, min(tw - 1, x0))
+        y0 = max(0, min(th - 1, y0))
+        x1 = max(0, min(tw, x1))
+        y1 = max(0, min(th, y1))
+
+        m = np.zeros((th, tw), dtype=np.uint8)
+        m[y0:y1, x0:x1] = 1
+        return m
+
+    def _load_and_resize(self, path: str) -> Tuple[torch.Tensor, Tuple[int, int]]:
+        img = Image.open(path).convert("RGB")
+        ow, oh = img.size
+        img = img.resize((self.W, self.H), resample=Image.BILINEAR)
+        arr = np.asarray(img, dtype=np.float32)
+        if self.normalize:
+            arr /= 255.0
+        t = torch.from_numpy(arr).permute(2, 0, 1).to(self.dtype)  # [3,H,W]
+        return t, (ow, oh)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        row = self.rows[idx]
+        obs_paths_grid: List[List[str]] = row["obs_cam_img_grid"]  # [T_in][C]
+        cams: List[str] = row["cam_set"]
+        T_in = len(obs_paths_grid)
+        C = len(cams)
+
+        frames_t: List[torch.Tensor] = []
+        concat_masks_per_cam: List[np.ndarray] = []
+
+        # Build init mask at t=0 for target across all cams
+        inst_tok: str = row["target"]["agent_id"]
+        init_masks_c = []
+        for ci, cam in enumerate(cams):
+            sd0 = row["cams"][cam]["sd_tokens"][0]
+            K = np.asarray(row["cams"][cam]["intrinsics"], dtype=np.float32)
+            # Load first frame for orig size to scale mask correctly
+            img0 = Image.open(obs_paths_grid[0][ci]).convert("RGB")
+            ow, oh = img0.size
+            m = self._mask_from_box(self.nusc, sd0, inst_tok, K, (self.H, self.W), (ow, oh))
+            init_masks_c.append(m)
+        init_mask_full = np.concatenate(init_masks_c, axis=1)  # [H, W*C]
+        init_mask_full_t = torch.from_numpy(init_mask_full[None, ...]).to(torch.uint8)  # [1,H,W*C]
+
+        # Build frames over time: concat per-cam horizontally after resizing
+        for t in range(T_in):
+            per_cam_imgs = []
+            for ci in range(C):
+                img_t, _ = self._load_and_resize(obs_paths_grid[t][ci])
+                per_cam_imgs.append(img_t)
+            frame_t = torch.cat(per_cam_imgs, dim=2)  # [3,H,W*C]
+            frames_t.append(frame_t)
+
+        frames = torch.stack(frames_t, dim=0)  # [T,3,H,W*C]
+
+        traj = torch.tensor(row["target"]["future_xy"], dtype=self.dtype)          # [T_out,2]
+        last_pos = torch.tensor(row["target"]["last_xy"], dtype=self.dtype)       # [2]
+
+        sample = {
+            "frames": frames,                       # [T_in,3,H,W*C]
+            "traj": traj,                           # [T_out,2]
+            "last_pos": last_pos,                   # [2]
+            "init_masks": init_mask_full_t,       # K=1 -> list of [1,H,W*C]
+            "init_labels": [1],                     # labels for XMem-style heads
+            "meta": {
+                "scene_name": row["scene_name"],
+                "cams": cams,
+                "start_sample_token": row["start_sample_token"],
+                "anchor_cam": row["context"]["anchor_cam"],
+                "W_concat": frames.shape[-1],
+                "H": frames.shape[-2],
+            },
+        }
+        return sample

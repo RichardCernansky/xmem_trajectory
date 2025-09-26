@@ -3,6 +3,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
 from torch.utils.data import DataLoader
+import pickle
 
 REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
 if REPO_ROOT not in sys.path:
@@ -154,8 +155,16 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     nusc = NuScenes(version="v1.0-trainval", dataroot=r"e:\nuscenes", verbose=False)
 
-    train_ds = NuScenesSeqLoader(index_path="train_agents_index.pkl", resize=True, resize_wh=(640, 384), nusc=nusc)
-    val_ds   = NuScenesSeqLoader(index_path="val_agents_index.pkl",   resize=True, resize_wh=(640, 384), nusc=nusc)
+    # Load rows from pickle
+    with open("train_agents_index.pkl", "rb") as f:
+        train_rows = pickle.load(f)
+
+    with open("val_agents_index.pkl", "rb") as f:
+        val_rows = pickle.load(f)
+
+    # Create datasets
+    train_ds = NuScenesSeqLoader(nusc=nusc, rows=train_rows, out_size=(384, 640))
+    val_ds   = NuScenesSeqLoader(nusc=nusc, rows=val_rows,   out_size=(384, 640))
 
     train_loader = DataLoader(train_ds, batch_size=4, shuffle=True,  num_workers=4, pin_memory=True, collate_fn=collate_varK)
     val_loader   = DataLoader(val_ds,   batch_size=4, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_varK)
