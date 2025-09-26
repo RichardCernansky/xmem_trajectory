@@ -46,15 +46,44 @@ def metrics_best_of_k(pred_abs_k, gt_abs, r=2.0):
     return {"ADE": ade, "FDE": fde, "mADE": ade, "mFDE": fde, "MR@2m": mr}
 
 
-def best_of_k_loss(pred_abs_k, probs, gt_abs, ce_weight=0.1):
-    ade_k, fde_k = ade_fde_per_mode(pred_abs_k, gt_abs)
+import torch
+import torch.nn.functional as F
+
+def best_of_k_loss_diverse(pred_abs_k, mode_logits, gt_abs,
+                           ce_weight=0.0,
+                           balance_w=0.01,
+                           div_w=0.05,
+                           tau=4.0):
+    # pred_abs_k: [B,K,T,2], gt_abs: [B,T,2]
+    diff = pred_abs_k - gt_abs[:, None, :, :]
+    d = torch.linalg.norm(diff, dim=-1)          # [B,K,T]
+    ade_k = d.mean(dim=-1)                       # [B,K]
+    fde_k = torch.linalg.norm(diff[:, :, -1, :], dim=-1)  # [B,K]
+
     best_idx = ade_k.argmin(dim=1)
-    B = gt_abs.size(0)
+    B, K = ade_k.shape
     row = torch.arange(B, device=gt_abs.device)
-    min_ade = ade_k[row, best_idx].mean()
-    min_fde = fde_k[row, best_idx].mean()
-    ce = torch.nn.functional.cross_entropy(probs, best_idx)
-    return min_ade, min_fde, (min_ade + min_fde) + ce_weight * ce
+
+    ade_best = ade_k[row, best_idx].mean()
+    fde_best = fde_k[row, best_idx].mean()
+    reg = ade_best + fde_best
+
+    ce = F.cross_entropy(mode_logits, best_idx) if ce_weight > 0.0 else pred_abs_k.new_zeros(())
+
+    assign = F.one_hot(best_idx, num_classes=K).float()    # [B,K]
+    p_bar = assign.mean(dim=0)                             # [K]
+    balance = ((p_bar - (1.0 / K))**2).sum()
+
+    flat = pred_abs_k.reshape(B, K, -1)                    # [B,K,2T]
+    dist = torch.cdist(flat, flat, p=2)                    # [B,K,K]
+    eye = torch.eye(K, device=gt_abs.device).unsqueeze(0)
+    rep = torch.exp(-dist / tau) * (1 - eye)
+    div = rep.sum(dim=(1, 2)).mean()
+
+    total = reg + ce_weight * ce + balance_w * balance + div_w * div
+    return ade_best, fde_best, total
+
+
 
 
 def run_epoch(backbone, head, loader, device, optimizer=None, mr_radius=2.0, ce_weight=0.1):
@@ -79,7 +108,11 @@ def run_epoch(backbone, head, loader, device, optimizer=None, mr_radius=2.0, ce_
         pred_abs_k = last_pos[:, None, None, :] + traj_res_k
 
         if train_mode:
-            ade, fde, loss = best_of_k_loss(pred_abs_k, mode_logits, gt_future, ce_weight=ce_weight)
+            ade, fde, loss = best_of_k_loss_diverse(
+            pred_abs_k, mode_logits, gt_future,
+            ce_weight=0.0, balance_w=0.01, div_w=0.05, tau=4.0
+        )
+
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
