@@ -74,6 +74,7 @@ class XMemMMBackboneWrapper(nn.Module):
         frames = frames.to(self.device, non_blocking=True)
 
         all_feats: List[torch.Tensor] = []
+        all_masks: List[torch.Tensor] = [] 
 
         # --- process each sequence sequentially with a single MemoryManager ---
         for b in range(B):
@@ -113,6 +114,7 @@ class XMemMMBackboneWrapper(nn.Module):
             mm.all_labels = lab0
 
             seq_feats: List[torch.Tensor] = []
+            seq_masks: List[torch.Tensor] = []
 
             for t in range(T):
                 curr_ti += 1
@@ -161,6 +163,22 @@ class XMemMMBackboneWrapper(nn.Module):
                     prob_no_bg_for_pool = pred_prob_with_bg[1:]  # [K,Hs,Ws]
                     if is_normal_update:
                         mm.set_hidden(hidden_local)
+                
+                 # --- build a union FG mask and upsample to (H, W) ---  ### NEW
+                if pred_prob_with_bg is not None:
+                    if pred_prob_with_bg.shape[0] > 1:
+                        fg_small = pred_prob_with_bg[1:]              # [K, Hs, Ws]
+                        union_small = fg_small.max(dim=0)[0]          # [Hs, Ws]
+                    else:
+                        union_small = torch.zeros_like(pred_prob_with_bg[0])
+                    union_up = F.interpolate(
+                        union_small.unsqueeze(0).unsqueeze(0),        # [1,1,Hs,Ws]
+                        size=(H, W), mode="bilinear", align_corners=False
+                    )[0, 0]                                           # [H, W]
+                else:
+                    union_up = torch.zeros(H, W, device=self.device)
+
+                seq_masks.append(union_up.detach().cpu()) 
 
                 # write probs (separate from pooled probs)
                 if t == 0 and m0 is not None:
@@ -201,7 +219,9 @@ class XMemMMBackboneWrapper(nn.Module):
                 else:
                     feat = key.mean(dim=(2, 3)).squeeze(0)  # [64]
                 seq_feats.append(feat)
-
+                
+                
+            all_masks.append(torch.stack(seq_masks, dim=0))
             all_feats.append(torch.stack(seq_feats, dim=0))  # [T, D]
 
         # stack to [B,T,D]
@@ -213,4 +233,6 @@ class XMemMMBackboneWrapper(nn.Module):
             if pad > 0:
                 fb = torch.cat([fb, fb.new_zeros(pad, D)], dim=0)
             out.append(fb)
+        
+        self.last_masks = torch.stack(all_masks, dim=0)               ### NEW  [B, T, H, W]
         return torch.stack(out, dim=0)  # [B,T,D]

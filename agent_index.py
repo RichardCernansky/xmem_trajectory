@@ -102,7 +102,7 @@ def build_agent_sequence_index(
     class_prefixes: Tuple[str, ...] = ("vehicle.",),
     dataroot: Optional[str] = None,
     visibility: BoxVisibility = BoxVisibility.ANY,
-    throttle_max_rows: Optional[int] = 1000,
+    throttle_max_rows: Optional[int] = 200,
 ) -> List[Dict]:
     if cameras is None or len(cameras) == 0:
         cameras = list(DEFAULT_CAMS)
