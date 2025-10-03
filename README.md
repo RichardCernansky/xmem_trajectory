@@ -135,3 +135,16 @@ Epoch 10: Train ADE 1.065 FDE 1.754 | Val ADE 2.830 FDE 5.144 MR@2m 0.447
 Epoch 11: Train ADE 1.084 FDE 1.801 | Val ADE 2.653 FDE 5.014 MR@2m 0.420 
 Epoch 12: Train ADE 1.002 FDE 1.669 | Val ADE 3.013 FDE 5.296 MR@2m 0.443 
 Epoch 13: Train ADE 0.907 FDE 1.461 | Val ADE 2.572 FDE 4.928 MR@2m 0.433
+
+
+FDE term into loss
+uni-modal
+in-scene visualization
+
+refactor!!
+add x axis alignment into loss
+check what each in xmem_config actually does
+dropout for head
+saving plots into runs!!
+finish predictor def train():
+finish trainer and vizualizations

@@ -1,0 +1,9 @@
+{
+    "epochs": 20,
+    "batch_size": 4,
+    "mr_radius": 2.0,
+    "K": 1,
+    "horizon": 12,
+    "train_decoder": false
+
+}
