@@ -1,9 +1,11 @@
 import sys
-from typing import List, Optional, Dict
+from typing import List, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import json
+
+from data.configs.filenames import XMEM_CHECKPOINT, TRAIN_CONFIG, XMEM_CONFIG
+from trainer.utils import open_config
 
 REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
 if REPO_ROOT not in sys.path:
@@ -14,7 +16,7 @@ from model.aggregate import aggregate
 from util.tensor_util import pad_divide_by
 from model.network import XMem
 
-def load_xmem(backbone_ckpt="./XMem/checkpoints/XMem-s012.pth", device="cuda"):
+def load_xmem(backbone_ckpt=XMEM_CHECKPOINT, device="cuda"):
     cfg = {"single_object": False}
     net = XMem(cfg, model_path=backbone_ckpt, map_location="cpu")
     state = torch.load(backbone_ckpt, map_location="cpu")
@@ -26,15 +28,16 @@ class XMemBackboneWrapper(nn.Module):
     def __init__(self, device: str):
         super().__init__()
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.train_config = json.loads("data/configs/train_config.json")
-        self.xmem_config = json.loads("data/configs/xmem_config.json")
+        self.train_config = open_config(TRAIN_CONFIG)
+        self.xmem_config = open_config(XMEM_CONFIG)
         self.xmem = load_xmem()
-        self.net = self.xmem.to(self.device)
-        self.hidden_dim = getattr(self.net, "hidden_dim")
+        self.xmem_core = self.xmem.to(self.device)
+        self.hidden_dim = getattr(self.xmem_core, "hidden_dim")
+        self.xmem_config["hidden_dim"] = self.hidden_dim
 
-        self.mem_every = self.xmem_cfg["mem_every"]
-        self.deep_update_every = self.xmem_cfg["deep_update_every"]
-        self.enable_long_term = self.xmem_cfg["enable_long_term"]
+        self.mem_every = self.xmem_config["mem_every"]
+        self.deep_update_every = self.xmem_config["deep_update_every"]
+        self.enable_long_term = self.xmem_config["enable_long_term"]
         self.deep_update_sync = (self.deep_update_every < 0)
 
         # freeze all parameters
@@ -47,8 +50,20 @@ class XMemBackboneWrapper(nn.Module):
                 p.requires_grad = True
 
 
-    def train():
-        
+    def train(self, mode: bool = True):
+        super().train(mode)
+        key_enc = self.xmem_core.key_encoder
+        val_enc = self.xmem_core.value_encoder
+        dec = self.xmem_core.decoder
+
+        if key_enc is not None:
+            key_enc.train(mode) if self.train_config.get("train_xmem_key_encoder") else key_enc.eval()
+        if val_enc is not None:
+            val_enc.train(mode) if self.train_config.get("train_xmem_val_encoder") else val_enc.eval()
+        if dec is not None:
+            dec.train(mode) if self.train_config.get("train_xmem_decoder") else dec.eval()
+        return self
+
 
     @staticmethod
     def _masked_avg_pool_single(hid: torch.Tensor,
@@ -96,7 +111,7 @@ class XMemBackboneWrapper(nn.Module):
         # --- process each sequence sequentially with a single MemoryManager ---
         for b in range(B):
             # per-sequence memory/state
-            mm = MemoryManager(config=self.mm_cfg.copy())
+            mm = MemoryManager(config=self.xmem_config.copy())
             mm.ti = -1
             mm.set_hidden(None)
 
@@ -156,7 +171,7 @@ class XMemBackboneWrapper(nn.Module):
                 img_pad, _ = pad_divide_by(rgb, 16)
                 img_pad = img_pad.unsqueeze(0)          # [1,3,H',W']
 
-                key, shrinkage, selection, f16, f8, f4 = self.net.encode_key(
+                key, shrinkage, selection, f16, f8, f4 = self.xmem_core.encode_key(
                     img_pad,
                     need_ek=(self.enable_long_term or need_segment),
                     need_sk=is_mem_frame
@@ -169,7 +184,7 @@ class XMemBackboneWrapper(nn.Module):
 
                 if need_segment:
                     memory_readout = mm.match_memory(key, selection).unsqueeze(0)
-                    hidden_local, _, pred_prob_with_bg = self.net.segment(
+                    hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
                         multi,
                         memory_readout,
                         mm.get_hidden(),
@@ -216,7 +231,7 @@ class XMemBackboneWrapper(nn.Module):
                         h_cur = mm.get_hidden()
 
                     write_obj = pred_prob_with_bg_for_write[1:].unsqueeze(0).detach()
-                    value, hidden2 = self.net.encode_value(
+                    value, hidden2 = self.xmem_core.encode_value(
                         img_pad, f16, h_cur,
                         write_obj,
                         is_deep_update=is_deep_update

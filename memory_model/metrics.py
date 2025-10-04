@@ -10,7 +10,7 @@ def ade_fde_per_mode(pred_abs_k, gt_abs):
 
 
 @torch.no_grad()
-def metrics_best_of_k(pred_abs_k, gt_abs, r=2.0):
+def metrics_best_of_k(pred_abs_k, gt_abs, r):
     ade_k, fde_k = ade_fde_per_mode(pred_abs_k, gt_abs)    # [B,K], [B,K]
     best_idx = ade_k.argmin(dim=1)                         # [B]
     B = gt_abs.size(0)
