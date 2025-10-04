@@ -1,9 +1,22 @@
 {
-    "epochs": 20,
-    "batch_size": 4,
-    "mr_radius": 2.0,
-    "K": 1,
-    "horizon": 12,
-    "train_decoder": false
+  "epochs": 20,
+  "batch_size": 4,
+  "mr_radius": 2.0,
+  "K": 1,
+  "horizon": 12,
+  "train_xmem_key_encoder": false,
+  "train_xmem_val_encoder": false,
+  "train_xmem_decoder": false,
 
+  "lr_head": 3e-4,
+  "wd_head": 1e-4,
+
+  "lr_decoder": 3e-6,
+  "wd_decoder": 1e-5,
+
+  "lr_key_encoder": 1e-6,
+  "wd_key_encoder": 1e-6,
+
+  "lr_value_encoder": 1e-6,
+  "wd_value_encoder": 1e-6
 }

@@ -137,8 +137,13 @@ Epoch 12: Train ADE 1.002 FDE 1.669 | Val ADE 3.013 FDE 5.296 MR@2m 0.443
 Epoch 13: Train ADE 0.907 FDE 1.461 | Val ADE 2.572 FDE 4.928 MR@2m 0.433
 
 
-FDE term into loss
-uni-modal
+FDE term into loss - done
+uni-modal - done
+finish predictor def train(): done
+finish trainer and vizualizations  #put whre the plots are created: done
+memory model  #self.optimizer: done
+
+add depth information from lidar data
 in-scene visualization
 
 refactor!!
@@ -146,5 +151,6 @@ add x axis alignment into loss
 check what each in xmem_config actually does
 dropout for head
 saving plots into runs!!
-finish predictor def train():
-finish trainer and vizualizations
+
+refactor datamodules
+refactor indexing: optional

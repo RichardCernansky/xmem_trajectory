@@ -1,4 +1,13 @@
 import torch
+import os
+#put whre the plots are created
+os.environ["MPLBACKEND"] = "Agg"   # optional but safe
+import matplotlib
+matplotlib.use("Agg")              # must be before pyplot
+import matplotlib.pyplot as plt
+import numpy as np
+
+from memory_model.metrics import ade_fde_per_mode
 
 @torch.no_grad()
 def visualize_xmem_masks_simple(backbone, frames, save_path, max_samples=4, max_frames=6, thresh=0.5):

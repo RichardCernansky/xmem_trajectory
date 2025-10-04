@@ -1,25 +1,17 @@
 import os, sys, torch
-import torch.optim as optim
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-import pickle
-import json
 
 from memory_model.model import MemoryModel
-
-#put whre the plots are created
-os.environ["MPLBACKEND"] = "Agg"   # optional but safe
-import matplotlib
-matplotlib.use("Agg")              # must be before pyplot
-import matplotlib.pyplot as plt
-
+from trainer.utils import open_config, open_index
+from data.configs.filenames import TRAIN_CONFIG, TRAIN_INDEX, VAL_INDEX
 
 #old
-from datamodule.datamodules import NuScenesSeqLoader, collate_varK
+from datamodule.datamodules import NuScenesSeqLoader, collate_varK 
 from nuscenes.nuscenes import NuScenes
 
 
-def run_epoch(model, mode, loader):
+def run_epoch(model, mode, loader, ep: int):
     
     train_mode = (mode == "train")
     (model.train if train_mode else model.eval)()
@@ -28,7 +20,7 @@ def run_epoch(model, mode, loader):
     sum_ade = sum_fde = sum_made = sum_mfde = sum_mr = 0.0
     for batch in loader:
         if train_mode:
-            m, _ = model.training_step(batch)
+            m, _ = model.training_step(batch, ep)
         else:
             m, _ = model.validation_step(batch)
 
@@ -52,15 +44,14 @@ def run_epoch(model, mode, loader):
 
 
 def main():
-    train_config = json.loads("data/configs/train_config.json")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     nusc = NuScenes(version="v1.0-trainval", dataroot=r"e:\nuscenes", verbose=False)
 
+    # open training config
+    train_config = open_config(TRAIN_CONFIG)
     # load rows from pickle
-    with open("train_agents_index.pkl", "rb") as f:
-        train_rows = pickle.load(f)
-    with open("val_agents_index.pkl", "rb") as f:
-        val_rows = pickle.load(f)
+    train_rows = open_index(TRAIN_INDEX) 
+    val_rows = open_index(VAL_INDEX) 
 
     # Create datasets
     train_ds = NuScenesSeqLoader(nusc=nusc, rows=train_rows, out_size=(384, 640))
@@ -70,12 +61,11 @@ def main():
 
     model = MemoryModel(device)
 
-    
     hist = {"epoch": [], "train_ADE": [], "train_FDE": [], "val_ADE": [], "val_FDE": [], "val_MR2": []}
 
     for ep in range(train_config["epochs"]):
-        train_m = run_epoch(model, "train", train_loader)
-        val_m   = run_epoch(model, "val", val_loader)
+        train_m = run_epoch(model, "train", train_loader, ep)
+        val_m   = run_epoch(model, "val", val_loader, ep)
         print(f"Epoch {ep}: Train ADE {train_m['ADE']:.3f} FDE {train_m['FDE']:.3f} | "
               f"Val ADE {val_m['ADE']:.3f} FDE {val_m['FDE']:.3f} MR@2m {val_m['MR@2m']:.3f}")
 
@@ -85,27 +75,6 @@ def main():
         hist["val_ADE"].append(val_m["ADE"])
         hist["val_FDE"].append(val_m["FDE"])
         hist["val_MR2"].append(val_m["MR@2m"])
-
-        with torch.no_grad():
-            try:
-                batch = next(iter(val_loader))
-                frames     = batch["frames"].to(device, non_blocking=True)
-                init_masks = batch["init_masks"]
-                init_labels= batch["init_labels"]
-                gt_future  = batch["traj"].to(device, non_blocking=True)
-                last_pos   = batch["last_pos"].to(device, non_blocking=True)
-
-                feats = backbone(frames, init_masks=init_masks, init_labels=init_labels)
-                traj_res_k, mode_logits = head(feats)                  # [B,K,T,2]
-
-                pred_abs_k = last_pos[:, None, None, :] + traj_res_k   # absolute coords
-
-                visualize_predictions(
-                    pred_abs_k, gt_future, last_pos,
-                    save_path=f"runs/vis_epoch_{ep}.png", max_samples=8
-                )
-            except StopIteration:
-                pass
 
     plt.figure(figsize=(8,5))
     plt.plot(hist["epoch"], hist["train_ADE"], marker="o", label="Train ADE")
