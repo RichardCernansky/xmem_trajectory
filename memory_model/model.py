@@ -4,11 +4,11 @@ from torch import nn
 
 from data.configs.filenames import TRAIN_CONFIG
 from trainer.utils import open_config
-from memory_model.optimizer import make_optimizer
-from memory_model.xmem_wrapper.predictor import XMemBackboneWrapper
-from memory_model.head import MultiModalTrajectoryHead
-from memory_model.losses import best_of_k_loss
-from memory_model.metrics import metrics_best_of_k
+from .optimizer import make_optimizer
+from .xmem_wrapper.predictor import XMemBackboneWrapper
+from .head import MultiModalTrajectoryHead
+from .losses import best_of_k_loss
+from .metrics import metrics_best_of_k
 
 
 class MemoryModel(nn.Module):

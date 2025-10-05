@@ -143,6 +143,10 @@ finish predictor def train(): done
 finish trainer and vizualizations  #put whre the plots are created: done
 memory model  #self.optimizer: done
 
+load dataroot and version from train config, also add lidar min_depth, max_depth, depth_out_c in model.py
+tidy edit optimizer
+resolve lidar cut off error
+
 add depth information from lidar data
 in-scene visualization
 

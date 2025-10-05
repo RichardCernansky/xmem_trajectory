@@ -1,12 +1,12 @@
 from typing import List, Dict, Optional, Tuple
-import os
 import numpy as np
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.splits import train as TRAIN_SCENES, val as VAL_SCENES
-from pyquaternion import Quaternion
 from nuscenes.utils.geometry_utils import BoxVisibility
+from pyquaternion import Quaternion
 
 DEFAULT_CAMS = ["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"]
+DEFAULT_LIDAR = "LIDAR_TOP"
 
 def _is_instance_in_camera(nusc: NuScenes, cam_sd_token: str, inst_tok: str,
                            vis: BoxVisibility = BoxVisibility.ANY) -> bool:
@@ -47,20 +47,22 @@ def _cam_sd_and_img(nusc: NuScenes, sample_token: str, cam: str):
     calib = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
     K = np.asarray(calib["camera_intrinsic"], dtype=np.float32)
     img_path = nusc.get_sample_data_path(sd_tok)
-    return sd_tok, img_path, K
+    return sd_tok, img_path.replace("\\", "/"), K
 
 def _cams_sd_and_imgs(nusc: NuScenes, sample_token: str, cameras: List[str]):
     out = {}
     ordered_paths = []
     for cam in cameras:
         sd_tok, img, K = _cam_sd_and_img(nusc, sample_token, cam)
-        out[cam] = {
-            "sd_token": sd_tok,
-            "img_path": img.replace("\\", "/"),
-            "K": K
-        }
-        ordered_paths.append(out[cam]["img_path"])
+        out[cam] = {"sd_token": sd_tok, "img_path": img, "K": K}
+        ordered_paths.append(img)
     return out, ordered_paths
+
+def _lidar_sd_and_path(nusc: NuScenes, sample_token: str, lidar_sensor: str):
+    s = nusc.get("sample", sample_token)
+    sd_tok = s["data"][lidar_sensor]
+    path = nusc.get_sample_data_path(sd_tok)
+    return sd_tok, path.replace("\\", "/")
 
 def _ann_by_instance(nusc: NuScenes, sample_token: str) -> Dict[str, dict]:
     s = nusc.get("sample", sample_token)
@@ -84,10 +86,33 @@ def _ego_pose_from_sd(nusc: NuScenes, sd_token: str):
 def _pose_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
     sd = nusc.get("sample_data", sd_token)
     ep = nusc.get("ego_pose", sd["ego_pose_token"])
-    t = np.asarray(ep["translation"], dtype=np.float32)
-    R = Quaternion(ep["rotation"]).transformation_matrix
-    R[:3, 3] = t
-    return R.astype(np.float32)
+    T = Quaternion(ep["rotation"]).transformation_matrix
+    T[:3, 3] = np.asarray(ep["translation"], dtype=np.float32)
+    return T.astype(np.float32)
+
+def _T_sensor_to_ego_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    sd = nusc.get("sample_data", sd_token)
+    cs = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
+    T = Quaternion(cs["rotation"]).transformation_matrix
+    T[:3, 3] = np.asarray(cs["translation"], dtype=np.float32)
+    return T.astype(np.float32)
+
+def _T_ego_to_sensor_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    return np.linalg.inv(_T_sensor_to_ego_4x4(nusc, sd_token)).astype(np.float32)
+
+def _T_ego_to_global_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    return _pose_4x4(nusc, sd_token)
+
+def _T_global_to_ego_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    return np.linalg.inv(_pose_4x4(nusc, sd_token)).astype(np.float32)
+
+def _T_cam_from_lidar_4x4(nusc: NuScenes, cam_sd_token: str, lidar_sd_token: str) -> np.ndarray:
+    T_cam_from_ego = _T_ego_to_sensor_4x4(nusc, cam_sd_token)
+    T_ego_cam_from_global = _T_global_to_ego_4x4(nusc, cam_sd_token)
+    T_global_from_ego_lidar = _T_ego_to_global_4x4(nusc, lidar_sd_token)
+    T_ego_from_lidar = _T_sensor_to_ego_4x4(nusc, lidar_sd_token)
+    T = T_cam_from_ego @ T_ego_cam_from_global @ T_global_from_ego_lidar @ T_ego_from_lidar
+    return T.astype(np.float32)
 
 def build_agent_sequence_index(
     nusc: NuScenes,
@@ -102,7 +127,9 @@ def build_agent_sequence_index(
     class_prefixes: Tuple[str, ...] = ("vehicle.",),
     dataroot: Optional[str] = None,
     visibility: BoxVisibility = BoxVisibility.ANY,
-    throttle_max_rows=1000
+    throttle_max_rows: Optional[int] = 1000,
+    lidar_sensor: str = DEFAULT_LIDAR,
+    compute_lidar_transforms: bool = False
 ) -> List[Dict]:
     if cameras is None or len(cameras) == 0:
         cameras = list(DEFAULT_CAMS)
@@ -148,6 +175,22 @@ def build_agent_sequence_index(
                     if cam not in intrinsics_once:
                         intrinsics_once[cam] = cam_info_map[cam]["K"].tolist()
 
+            lidar_sd_tokens: List[str] = []
+            lidar_pc_paths: List[str] = []
+            for st in obs_tokens:
+                sd_l, p_l = _lidar_sd_and_path(nusc, st, lidar_sensor)
+                lidar_sd_tokens.append(sd_l)
+                lidar_pc_paths.append(p_l)
+
+            T_cam_from_lidar: Dict[str, List[List[List[float]]]] = {cam: [] for cam in cameras}
+            if compute_lidar_transforms:
+                for i in range(len(obs_tokens)):
+                    for cam in cameras:
+                        cam_sd = cams_block[cam]["sd_tokens"][i]
+                        lidar_sd = lidar_sd_tokens[i]
+                        T = _T_cam_from_lidar_4x4(nusc, cam_sd, lidar_sd)
+                        T_cam_from_lidar[cam].append(T.tolist())
+
             sd_anchor = cams_block[anchor_cam]["sd_tokens"][-1]
             t_w, R_w = _ego_pose_from_sd(nusc, sd_anchor)
             R_we_2x2 = R_w[:2, :2].T
@@ -179,7 +222,7 @@ def build_agent_sequence_index(
                     continue
 
                 if min_speed_mps > 0 and valid >= 2:
-                    j = min(3, len(fut_xy_e)-1)
+                    j = min(3, len(fut_xy_e) - 1)
                     x3, y3 = fut_xy_e[j]
                     dist = (x3**2 + y3**2) ** 0.5
                     approx_speed = dist / 1.5
@@ -191,11 +234,11 @@ def build_agent_sequence_index(
                 if not _is_instance_in_any_cam(nusc, obs_tokens[0], inst_tok, cameras, vis=visibility):
                     continue
 
-                rows.append({
+                row = {
                     "scene_name": scene_name,
                     "start_sample_token": obs_tokens[0],
-                    "obs_sample_tokens": obs_tokens, # observed frames len=t_in
-                    "fut_sample_tokens": fut_tokens, # future frames len=t_out
+                    "obs_sample_tokens": obs_tokens,
+                    "fut_sample_tokens": fut_tokens,
                     "cam_set": list(cameras),
                     "cams": {
                         cam: {
@@ -204,7 +247,13 @@ def build_agent_sequence_index(
                             "intrinsics": intrinsics_once[cam]
                         } for cam in cameras
                     },
-                    "obs_cam_img_grid": obs_cam_img_grid,  # [t_in][len(cameras)] paths in the same order as cam_set
+                    "obs_cam_img_grid": obs_cam_img_grid,
+                    "lidar": {
+                        "sensor": lidar_sensor,
+                        "sd_tokens": lidar_sd_tokens,
+                        "pc_paths": lidar_pc_paths,
+                        "T_cam_from_lidar": T_cam_from_lidar
+                    },
                     "target": {
                         "agent_id": inst_tok,
                         "last_xy": last_xy_e,
@@ -213,12 +262,14 @@ def build_agent_sequence_index(
                     },
                     "context": {
                         "anchor_cam": anchor_cam,
-                        "anchor_sd_token": sd_anchor
+                        "anchor_sd_token": sd_anchor,
+                        "anchor_lidar_sd_token": lidar_sd_tokens[-1] if lidar_sd_tokens else None
                     },
                     "dataroot": dataroot or ""
-                })
+                }
 
-                if throttle_max_rows is not None and len(rows) >= throttle_max_rows:
+                rows.append(row)
+                if len(rows) >= throttle_max_rows:
                     return rows
 
     return rows

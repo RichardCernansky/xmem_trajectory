@@ -1,37 +1,55 @@
 import torch
 
-def make_optimizer(MemoryModel) -> torch.optim.Optimizer:
-        cfg = MemoryModel.train_config
-        lr_head = cfg["lr_head"]
-        wd_head = cfg["wd_head"]
+def make_optimizer(model) -> torch.optim.Optimizer:
+    cfg = model.train_config
+    def get(k, default): return cfg[k] if k in cfg else default
 
-        lr_dec = cfg["lr_decoder"]
-        wd_dec = cfg["wd_decoder"]
+    groups = []
+    added = set()
 
-        lr_key = cfg["lr_key_encoder"]
-        wd_key = cfg["wd_key_encoder"]
+    def add_group(params, lr, wd):
+        ps = [p for p in params if p.requires_grad and id(p) not in added]
+        if not ps:
+            return
+        groups.append({"params": ps, "lr": float(lr), "weight_decay": float(wd)})
+        for p in ps: added.add(id(p))
 
-        lr_val = cfg["lr_value_encoder"]
-        wd_val = cfg["wd_value_encoder"]
+    # --- Head ---
+    add_group(model.head.parameters(), get("lr_head", 1e-3), get("wd_head", 1e-4))
 
-        xmem_core = MemoryModel.xmem_backbone_wrapper.xmem_core
-        key_enc = xmem_core.key_encoder
-        val_enc = xmem_core.value_encoder
-        dec     = xmem_core.decoder
+    # --- Depth path (late concat) ---
+    if hasattr(model, "depth_encoder"):
+        add_group(model.depth_encoder.parameters(),
+                  get("lr_depth", get("lr_head", 1e-3)),
+                  get("wd_depth", get("wd_head", 1e-4)))
+    if hasattr(model, "fuser"):
+        add_group(model.fuser.parameters(),
+                  get("lr_fuser", get("lr_depth", get("lr_head", 1e-3))),
+                  get("wd_fuser", get("wd_depth", get("wd_head", 1e-4))))
 
-        groups = []
-        groups.append({"params": MemoryModel.head.parameters(), "lr": lr_head, "weight_decay": wd_head})
+    # --- XMem parts (only if unfrozen) ---
+    xw = getattr(model, "xmem_backbone_wrapper", None)
+    xcore = getattr(xw, "xmem_core", None)
 
-        if dec and any(p.requires_grad for p in dec.parameters()):
-            groups.append({"params": [p for p in dec.parameters() if p.requires_grad],
-                        "lr": lr_dec, "weight_decay": wd_dec})
+    if xcore is not None:
+        key_enc = getattr(xcore, "key_encoder", None)
+        val_enc = getattr(xcore, "value_encoder", None)
+        dec     = getattr(xcore, "decoder", None)
 
-        if key_enc and any(p.requires_grad for p in key_enc.parameters()):
-            groups.append({"params": [p for p in key_enc.parameters() if p.requires_grad],
-                        "lr": lr_key, "weight_decay": wd_key})
+        if key_enc is not None:
+            add_group(key_enc.parameters(), get("lr_key_encoder", 1e-5), get("wd_key_encoder", 1e-4))
+        if val_enc is not None:
+            add_group(val_enc.parameters(), get("lr_value_encoder", 1e-5), get("wd_value_encoder", 1e-4))
+        if dec is not None:
+            add_group(dec.parameters(), get("lr_decoder", 1e-5), get("wd_decoder", 1e-4))
 
-        if val_enc and any(p.requires_grad for p in val_enc.parameters()):
-            groups.append({"params": [p for p in val_enc.parameters() if p.requires_grad],
-                        "lr": lr_val, "weight_decay": wd_val})
+        # any other unfrozen params inside the wrapper (e.g., you unfreeze the last stage)
+        other = [p for _, p in xw.named_parameters() if p.requires_grad and id(p) not in added]
+        add_group(other, get("lr_xmem_other", get("lr_decoder", 1e-5)),
+                        get("wd_xmem_other", get("wd_decoder", 1e-4)))
 
-        return torch.optim.AdamW(groups, betas=(0.9, 0.999))
+    # --- Safety net: leftover trainable params (unlikely, but future-proof) ---
+    leftovers = [p for p in model.parameters() if p.requires_grad and id(p) not in added]
+    add_group(leftovers, get("lr_misc", get("lr_head", 1e-3)), get("wd_misc", get("wd_head", 1e-4)))
+
+    return torch.optim.AdamW(groups, betas=(0.9, 0.999))
