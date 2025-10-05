@@ -6,8 +6,7 @@ from memory_model.model import MemoryModel
 from trainer.utils import open_config, open_index
 from data.configs.filenames import TRAIN_CONFIG, TRAIN_INDEX, VAL_INDEX
 
-#old
-from datamodule.datamodules import NuScenesSeqLoader, collate_varK 
+from datamodule.datamodule import NuScenesDataModule
 from nuscenes.nuscenes import NuScenes
 
 
@@ -42,7 +41,6 @@ def run_epoch(model, mode, loader, ep: int):
     }
 
 
-
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     nusc = NuScenes(version="v1.0-trainval", dataroot=r"e:\nuscenes", verbose=False)
@@ -54,10 +52,9 @@ def main():
     val_rows = open_index(VAL_INDEX) 
 
     # Create datasets
-    train_ds = NuScenesSeqLoader(nusc=nusc, rows=train_rows, out_size=(384, 640))
-    val_ds   = NuScenesSeqLoader(nusc=nusc, rows=val_rows,   out_size=(384, 640))
-    train_loader = DataLoader(train_ds, batch_size=train_config["batch_size"], shuffle=True,  num_workers=4, pin_memory=True, collate_fn=collate_varK)
-    val_loader   = DataLoader(val_ds,   batch_size=4, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_varK)
+    data_module = NuScenesDataModule(nusc, train_rows, val_rows)
+    train_loader = data_module.train_dataloader()
+    val_loader = data_module.val_dataloader()
 
     model = MemoryModel(device)
 

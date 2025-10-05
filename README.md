@@ -154,3 +154,5 @@ saving plots into runs!!
 
 refactor datamodules
 refactor indexing: optional
+
+loader camera triplet order alignment deleted 

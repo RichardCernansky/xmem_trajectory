@@ -194,8 +194,8 @@ def build_agent_sequence_index(
                 rows.append({
                     "scene_name": scene_name,
                     "start_sample_token": obs_tokens[0],
-                    "obs_sample_tokens": obs_tokens,
-                    "fut_sample_tokens": fut_tokens,
+                    "obs_sample_tokens": obs_tokens, # observed frames len=t_in
+                    "fut_sample_tokens": fut_tokens, # future frames len=t_out
                     "cam_set": list(cameras),
                     "cams": {
                         cam: {
