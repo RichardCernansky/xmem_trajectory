@@ -160,3 +160,9 @@ refactor datamodules
 refactor indexing: optional
 
 loader camera triplet order alignment deleted 
+
+
+add depth information from lidar data
+edit train_config and check the rgb+lidar data creation
++ after the training on rgb+lidar runs ->
+-> in-scene visualization

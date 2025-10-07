@@ -11,10 +11,12 @@ from .mask_utils import mask_from_box, compose_masks
 # LiDAR helpers
 from .lidar_utils import (
     T_cam_from_lidar_4x4,  # builds cam←lidar 4x4 transform at the correct timestamps
+    T_sensor_from_ego_4x4,
     scale_K,               # scales intrinsics to (H, cw)
     transform_points,      # applies 4x4 to Nx3 points
     rasterize_depth_xyz_cam,  # projects + z-buffers into a (H,cw) depth map
-    compose_three_depth    # stitches three depth crops into one pano using "near wins"
+    compose_three_depth,    # stitches three depth crops into one pano using "near wins"
+    invdepth_valid_from_depth
 )
 
 class NuScenesLoader(Dataset):
@@ -62,10 +64,16 @@ class NuScenesLoader(Dataset):
         T_in = len(obs_paths_grid)
         frames_t: List[torch.Tensor] = []
         depths_t: List[torch.Tensor] = []
+        extras_t: List[torch.Tensor]  = [] 
 
         inst_tok: str = row["target"]["agent_id"]
         m0L = m0F = m0R = None
         owL = ohL = owF = ohF = owR = ohR = None
+
+        # visualization purposes
+        rgbL_last = rgbF_last = rgbR_last = None
+        KLs_last = KFs_last = KRs_last = None
+        TLe_last = TFe_last = TRe_last = None
 
         for t in range(T_in):
             # === RGB: load + resize + stitch (your existing part) ===
@@ -127,6 +135,11 @@ class NuScenesLoader(Dataset):
             # 10) Store as (1,H,W) tensor for this timestep
             depths_t.append(torch.from_numpy(pano_depth[None, ...]).to(self.dtype))
 
+            # build adapter extras [inv_depth01, valid]
+            inv01, valid = invdepth_valid_from_depth(pano_depth)   # (H,W), (H,W)
+            extras = np.stack([inv01, valid], axis=0)                    # (2,H,W)
+            extras_t.append(torch.from_numpy(extras).to(self.dtype))
+
             # === Initial mask on t==0 (your existing part) ===
             if t == 0:
                 sdL0 = row["cams"][trip[0]]["sd_tokens"][0]
@@ -136,10 +149,22 @@ class NuScenesLoader(Dataset):
                 m0L = mask_from_box(self, self.nusc, sdL0, inst_tok, KL0, (self.H, self.cw), (owL, ohL))
                 m0F = mask_from_box(self, self.nusc, sdF0, inst_tok, KF0, (self.H, self.cw), (owF, ohF))
                 m0R = mask_from_box(self, self.nusc, sdR0, inst_tok, KR0, (self.H, self.cw), (owR, ohR))
+            
+            if t == T_in - 1:
+                rgbL_last = imL            # (H, cw, 3) numpy (no copy)
+                rgbF_last = imF
+                rgbR_last = imR
+                KLs_last = KLs             # (3,3) numpy (no copy)
+                KFs_last = KFs
+                KRs_last = KRs
+                TLe_last = T_sensor_from_ego_4x4(self.nusc, sdLt)  # (4,4) cam←ego
+                TFe_last = T_sensor_from_ego_4x4(self.nusc, sdFt)
+                TRe_last = T_sensor_from_ego_4x4(self.nusc, sdRt)
 
         # Stack over time: RGB (T,3,H,W), Depth (T,1,H,W)
         frames = torch.stack(frames_t, dim=0)
         depths = torch.stack(depths_t, dim=0)
+        depth_extras = torch.stack(extras_t, dim=0)
 
         # Build initial panorama mask
         if m0L is None:
@@ -156,6 +181,7 @@ class NuScenesLoader(Dataset):
         return {
             "frames": frames,          # (T_in, 3, H, W) RGB pano
             "depths": depths,          # (T_in, 1, H, W) depth pano (meters; 0 = no hit)
+            "depth_extras": depth_extras,
             "traj": traj,              # (T_future, 2)
             "last_pos": last_pos,      # (2,)
             "init_masks": init_mask_t, # (1, H, W) uint8
@@ -169,5 +195,21 @@ class NuScenesLoader(Dataset):
                 "overlap_lf": self.ov_lf_px,
                 "overlap_fr": self.ov_fr_px,
                 "crop_w": self.cw,
+
+                "viz_tiled": {
+                    "rgb_crops": [rgbL_last, rgbF_last, rgbR_last],   # [L,F,R], each (H,cw,3) uint8
+                    "K_scaled": {
+                        "CAM_FRONT_LEFT": KLs_last,
+                        "CAM_FRONT":      KFs_last,
+                        "CAM_FRONT_RIGHT":KRs_last,
+                    },
+                    "T_cam_from_ego": {
+                        "CAM_FRONT_LEFT": TLe_last,   # 4x4 cam←ego at last observed frame
+                        "CAM_FRONT":      TFe_last,
+                        "CAM_FRONT_RIGHT":TRe_last,
+                    },
+                    "H": self.H,
+                    "cw": self.cw,
+                },
             },
         }

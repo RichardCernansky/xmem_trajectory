@@ -6,6 +6,7 @@ def collate_varK(batch):
 
     # Depth pano: (B, T_in, 1, H, W)
     depths = torch.stack([b["depths"] for b in batch], dim=0)
+    depth_extras = torch.stack([b["depth_extras"] for b in batch], dim=0)
 
     # Supervision
     traj = torch.stack([b["traj"] for b in batch], dim=0)          # (B, T_future, 2)
@@ -21,6 +22,7 @@ def collate_varK(batch):
     return {
         "frames": frames,
         "depths": depths,
+        "depth_extras": depth_extras,  
         "traj": traj,
         "last_pos": last,
         "init_masks": init_masks,

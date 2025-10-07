@@ -1,5 +1,5 @@
 {
-  
+  "vis_output_path": "data/runs/vis_traj",
   "epochs": 20,
   "batch_size": 4,
   "mr_radius": 2.0,
