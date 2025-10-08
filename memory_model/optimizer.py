@@ -12,20 +12,19 @@ def make_optimizer(model) -> torch.optim.Optimizer:
         if not ps:
             return
         groups.append({"params": ps, "lr": float(lr), "weight_decay": float(wd)})
-        for p in ps: added.add(id(p))
+        for p in ps:
+            added.add(id(p))
+
+    # --- Early Fusion ---
+    if hasattr(model, "early_fusion"):
+        add_group(
+            model.early_fusion.parameters(),
+            get("lr_early_fusion", 5e-4),
+            get("wd_early_fusion", 1e-4),
+        )
 
     # --- Head ---
     add_group(model.head.parameters(), get("lr_head", 1e-3), get("wd_head", 1e-4))
-
-    # --- Depth path (late concat) ---
-    if hasattr(model, "depth_encoder"):
-        add_group(model.depth_encoder.parameters(),
-                  get("lr_depth", get("lr_head", 1e-3)),
-                  get("wd_depth", get("wd_head", 1e-4)))
-    if hasattr(model, "fuser"):
-        add_group(model.fuser.parameters(),
-                  get("lr_fuser", get("lr_depth", get("lr_head", 1e-3))),
-                  get("wd_fuser", get("wd_depth", get("wd_head", 1e-4))))
 
     # --- XMem parts (only if unfrozen) ---
     xw = getattr(model, "xmem_backbone_wrapper", None)

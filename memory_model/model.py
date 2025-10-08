@@ -10,7 +10,7 @@ from .head import MultiModalTrajectoryHead
 from .early_fusion import EarlyFusionAdapter
 from .losses import best_of_k_loss
 from .metrics import metrics_best_of_k
-from visualizer.vis_traj import TrajVisualizer
+
 
 
 class MemoryModel(nn.Module):
@@ -64,6 +64,7 @@ class MemoryModel(nn.Module):
         last_pos    = batch["last_pos"].to(self.device, non_blocking=True)
 
         traj_res_k, mode_logits = self.forward(frames, depth_extras, init_masks=init_masks, init_labels=init_labels)
+        
         pred_abs_k = self.to_abs(traj_res_k, last_pos)
         ade, fde, loss = best_of_k_loss(pred_abs_k, mode_logits, gt_future)
 
@@ -89,9 +90,5 @@ class MemoryModel(nn.Module):
             pred_abs_k = self.to_abs(traj_res_k, last_pos)
             m = metrics_best_of_k(pred_abs_k, gt_future, r=self.mr_radius)
 
-            # pred_abs_k: (B, K, T, 2) absolute ego XY; mode_probs: (B, K) optional
-            viz = TrajVisualizer(save_dir=self.train_config["vis_output_path"], dpi=120, draw_seams=True)
-            out_path = viz.render(batch, pred_abs_k, sample_idx=0, title="Trimmed pano | all modes")
-
-
+    
             return m, pred_abs_k

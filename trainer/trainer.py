@@ -4,7 +4,8 @@ from torch.utils.data import DataLoader
 
 from memory_model.model import MemoryModel
 from trainer.utils import open_config, open_index
-from data.configs.filenames import TRAIN_CONFIG, TRAIN_INDEX, VAL_INDEX
+from data.configs.filenames import TRAIN_CONFIG, TRAIN_INDEX, VAL_INDEX, TRAJ_VIS_OUT_PATH
+from visualizer.vis_traj import TrajVisualizer
 
 from datamodule.datamodule import NuScenesDataModule
 from nuscenes.nuscenes import NuScenes
@@ -21,7 +22,10 @@ def run_epoch(model, mode, loader, ep: int):
         if train_mode:
             m, _ = model.training_step(batch, ep)
         else:
-            m, _ = model.validation_step(batch)
+            m, pred_abs_k = model.validation_step(batch)
+               # pred_abs_k: (B, K, T, 2) absolute ego XY; mode_probs: (B, K) optional
+            viz = TrajVisualizer(save_dir=TRAJ_VIS_OUT_PATH, dpi=150, draw_seams=True)
+            out_path = viz.render_batch(batch, ep, pred_abs_k,  title="Trimmed pano | all modes")
 
         bsz = batch["traj"].shape[0]
         sum_ade  += m["ADE"]   * bsz
@@ -78,11 +82,11 @@ def main():
     plt.plot(hist["epoch"], hist["val_ADE"], marker="o", label="Val ADE")
     plt.plot(hist["epoch"], hist["train_FDE"], marker="o", label="Train FDE")
     plt.plot(hist["epoch"], hist["val_FDE"], marker="o", label="Val FDE")
-    plt.xlabel("Epoch"); plt.ylabel("Error"); plt.title("ADE/FDE"); plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("runs/ade_fde.png")
+    plt.xlabel("Epoch"); plt.ylabel("Error"); plt.title("ADE/FDE"); plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("data/runs/ade_fde.png")
 
     plt.figure(figsize=(8,4))
     plt.plot(hist["epoch"], hist["val_MR2"], marker="o", label="Val MR@2m")
-    plt.xlabel("Epoch"); plt.ylabel("Miss rate"); plt.title("Miss Rate @ 2 m"); plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("runs/missrate.png")
+    plt.xlabel("Epoch"); plt.ylabel("Miss rate"); plt.title("Miss Rate @ 2 m"); plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("data/runs/missrate.png")
 
 
 if __name__ == "__main__":

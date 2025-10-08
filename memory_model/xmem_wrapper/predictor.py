@@ -21,7 +21,7 @@ def load_xmem(backbone_ckpt=XMEM_CHECKPOINT, device="cuda"):
     net = XMem(cfg, model_path=backbone_ckpt, map_location="cpu")
     state = torch.load(backbone_ckpt, map_location="cpu")
     net.load_weights(state, init_as_zero_if_needed=True)
-    net.to(device).eval()
+    net.to(device)
     return net
 
 class XMemBackboneWrapper(nn.Module):

@@ -143,12 +143,11 @@ finish predictor def train(): done
 finish trainer and vizualizations  #put whre the plots are created: done
 memory model  #self.optimizer: done
 
-load dataroot and version from train config, also add lidar min_depth, max_depth, depth_out_c in model.py
+load dataroot and version from train config, and laso train and val indexes from config, also add lidar min_depth, max_depth, depth_out_c in model.py
 tidy edit optimizer
-resolve lidar cut off error
 
-add depth information from lidar data
-in-scene visualization
+visualizer not using the frames at t-1
+
 
 refactor!!
 add x axis alignment into loss
@@ -156,13 +155,9 @@ check what each in xmem_config actually does
 dropout for head
 saving plots into runs!!
 
+
 refactor datamodules
 refactor indexing: optional
 
 loader camera triplet order alignment deleted 
 
-
-add depth information from lidar data
-edit train_config and check the rgb+lidar data creation
-+ after the training on rgb+lidar runs ->
--> in-scene visualization

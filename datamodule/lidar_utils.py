@@ -96,36 +96,36 @@ def transform_points(T: np.ndarray, pts_xyz: np.ndarray) -> np.ndarray:
 def rasterize_depth_xyz_cam(xyz_cam: np.ndarray, K: np.ndarray, hw: Tuple[int,int]) -> np.ndarray:
     H, W = hw
 
-    # PATCH: also require finite XYZ; keep only points in front of camera with positive z
+    # PATCH: require finite XYZ and positive z; use small epsilon to avoid near-zero z
     z_all = xyz_cam[:, 2]
-    finite_xyz = np.isfinite(xyz_cam).all(axis=1)                     # PATCH
-    m_front = (z_all > 1e-9) & finite_xyz                             # PATCH
-    if not np.any(m_front):
+    finite_xyz = np.isfinite(xyz_cam).all(axis=1)                  # PATCH
+    m = (z_all > 1e-9) & finite_xyz                                # PATCH
+    if not np.any(m):
         return np.zeros((H, W), dtype=np.float32)
 
-    x = xyz_cam[m_front, 0]
-    y = xyz_cam[m_front, 1]
-    z = z_all[m_front]
+    x = xyz_cam[m, 0]
+    y = xyz_cam[m, 1]
+    z = z_all[m]
 
-    # PATCH: safe projection using np.divide to avoid NaNs/Infs from tiny denominators
+    # PATCH: safe projection using np.divide (avoids NaN/Inf creation at source)
     u_f = np.divide(K[0, 0] * x, z, out=np.full_like(z, np.nan), where=z > 1e-9) + K[0, 2]   # PATCH
     v_f = np.divide(K[1, 1] * y, z, out=np.full_like(z, np.nan), where=z > 1e-9) + K[1, 2]   # PATCH
 
-    # PATCH: drop any non-finite projections before rounding/casting
-    good_proj = np.isfinite(u_f) & np.isfinite(v_f)                                          # PATCH
-    if not np.any(good_proj):
+    # PATCH: round without casting yet; then drop non-finite results
+    u_r = np.rint(u_f)                                                                        # PATCH
+    v_r = np.rint(v_f)                                                                        # PATCH
+    good = np.isfinite(u_r) & np.isfinite(v_r)                                                # PATCH
+    if not np.any(good):
         return np.zeros((H, W), dtype=np.float32)
-    u_f = u_f[good_proj]; v_f = v_f[good_proj]; z = z[good_proj]                             # PATCH
+    u_r = u_r[good]; v_r = v_r[good]; z = z[good]                                             # PATCH
 
-    # Round to nearest pixel (now guaranteed finite)
-    u = np.rint(u_f).astype(np.int32)
-    v = np.rint(v_f).astype(np.int32)
-
-    # Keep points that land inside the image bounds
-    m_in = (u >= 0) & (u < W) & (v >= 0) & (v < H)
-    if not np.any(m_in):
+    # PATCH: in-bounds check still on float; cast only after this filter
+    m2 = (u_r >= 0) & (u_r < W) & (v_r >= 0) & (v_r < H)                                      # PATCH
+    if not np.any(m2):
         return np.zeros((H, W), dtype=np.float32)
-    u = u[m_in]; v = v[m_in]; z = z[m_in]
+    u = u_r[m2].astype(np.int32)                                                              # PATCH
+    v = v_r[m2].astype(np.int32)                                                              # PATCH
+    z = z[m2]
 
     # Initialize depth image with +inf so we can do a min-z z-buffer
     depth = np.full((H, W), np.inf, dtype=np.float32)

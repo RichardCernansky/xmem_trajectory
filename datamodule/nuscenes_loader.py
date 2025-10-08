@@ -179,7 +179,7 @@ class NuScenesLoader(Dataset):
 
         # Final sample
         return {
-            "frames": frames,          # (T_in, 3, H, W) RGB pano
+            "frames": frames,          # (T_in, 4, H, W) RGB pano
             "depths": depths,          # (T_in, 1, H, W) depth pano (meters; 0 = no hit)
             "depth_extras": depth_extras,
             "traj": traj,              # (T_future, 2)
