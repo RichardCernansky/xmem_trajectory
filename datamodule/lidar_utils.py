@@ -2,36 +2,77 @@ import numpy as np
 from typing import Tuple
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
+from nuscenes.utils.data_classes import LidarPointCloud
 
+def lidar_points_ego(self, lidar_sd_token: str) -> np.ndarray:
+        """LiDAR sweep → ego frame @ that timestamp. Returns (N,4): [x,y,z,intensity]."""
+        path = self.nusc.get_sample_data_path(lidar_sd_token)
+        pc = LidarPointCloud.from_file(path).points  # (4,N)
+        xyz = pc[:3, :].T.astype(np.float32)
+        inten = pc[3, :].astype(np.float32)
 
-def invdepth_valid_from_depth(depth_m: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    depth_max_m = 80.0
-    depth_min_m = 0.3
+        # normalize intensity if it looks like 0..255
+        max_i = inten.max() if inten.size else 0.0
+        if max_i > 1.5:
+            inten = inten / 255.0
 
-    # depth_m: (H,W), meters; 0.0 = no hit
-    eps = 1e-9
-    valid = (depth_m > 0.0).astype(np.float32)
-    d = depth_m.copy()
-    d[d <= 0.0] = np.inf  # avoid 1/0; invalid stays invalid via 'valid' mask
-    inv = 1.0 / d
-    inv_min = 1.0 / max(depth_max_m, eps)
-    inv_max = 1.0 / max(depth_min_m, eps)
-    inv01 = (inv - inv_min) / max(inv_max - inv_min, eps)
-    inv01 = np.clip(inv01, 0.0, 1.0)
-    inv01[valid == 0.0] = 0.0  # keep invalid pixels at 0
-    return inv01.astype(np.float32), valid.astype(np.float32)
+        T_sensor_from_ego = T_sensor_from_ego_4x4(self.nusc, lidar_sd_token)     # sensor <- ego
+        T_ego_from_sensor = np.linalg.inv(T_sensor_from_ego).astype(np.float32)  # ego <- sensor
+        xyz_ego = transform_points(T_ego_from_sensor, xyz)
+        return np.concatenate([xyz_ego, inten[:, None]], axis=1).astype(np.float32)
 
-def pose_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
-    # Load the sample_data record to reach its ego_pose
-    sd = nusc.get("sample_data", sd_token)
-    ep = nusc.get("ego_pose", sd["ego_pose_token"])
-    # Convert ego rotation (quaternion) into a 4x4 transform
-    T = Quaternion(ep["rotation"]).transformation_matrix
-    # Insert translation (x,y,z) into the matrix
-    T[:3, 3] = np.asarray(ep["translation"], dtype=np.float32)
-    # Return homogeneous transform: ego_in_global at that timestamp
-    return T.astype(np.float32)
+def lidar_bev_from_points_fixed(self, pts_ego: np.ndarray) -> np.ndarray:
+    """
+    Aggregate ego-frame points into a FIXED BEV grid: (H_raw, W_raw),
+    channels = [log1p(count), mean_z, max_z, mean_intensity].
+    Mapping: y_min -> top rows, y_max -> bottom rows (image rows increase downward).
+    """
+    C = 4
+    bev = np.zeros((C, self.H_raw, self.W_raw), dtype=np.float32)
+    if pts_ego.size == 0:
+        return bev
 
+    x = pts_ego[:, 0]; y = pts_ego[:, 1]; z = pts_ego[:, 2]; inten = pts_ego[:, 3]
+
+    # ROI filter
+    m = (x >= self.bev_x_min) & (x < self.bev_x_max) & (y >= self.bev_y_min) & (y < self.bev_y_max)
+    if not np.any(m):
+        return bev
+    x = x[m]; y = y[m]; z = z[m]; inten = inten[m]
+
+    # Discretize with inferred meters-per-pixel
+    ix = np.floor((x - self.bev_x_min) / self.res_x).astype(np.int64)  # [0..W_raw-1]
+    iy = np.floor((y - self.bev_y_min) / self.res_y).astype(np.int64)  # [0..H_raw-1]
+    np.clip(ix, 0, self.W_raw - 1, out=ix)
+    np.clip(iy, 0, self.H_raw - 1, out=iy)
+    lin = iy * self.W_raw + ix  # flattened indices
+
+    HW = self.H_raw * self.W_raw
+    count = np.bincount(lin, minlength=HW).astype(np.float32)
+    sum_z = np.bincount(lin, weights=z, minlength=HW).astype(np.float32)
+    sum_i = np.bincount(lin, weights=inten, minlength=HW).astype(np.float32)
+    max_z = np.full(HW, -np.inf, dtype=np.float32)
+    np.maximum.at(max_z, lin, z)
+
+    eps = 1e-6
+    mean_z = sum_z / (count + eps)
+    mean_i = sum_i / (count + eps)
+
+    # reshape & stabilize
+    count = count.reshape(self.H_raw, self.W_raw)
+    mean_z = mean_z.reshape(self.H_raw, self.W_raw)
+    max_z  = max_z.reshape(self.H_raw, self.W_raw)
+    mean_i = mean_i.reshape(self.H_raw, self.W_raw)
+
+    mean_z = np.clip(mean_z, -3.0, 5.0)
+    max_z  = np.clip(max_z,  -3.0, 5.0)
+    mean_i = np.clip(mean_i,  0.0, 1.0)
+
+    bev[0] = np.log1p(count)
+    bev[1] = mean_z
+    bev[2] = max_z
+    bev[3] = mean_i
+    return bev
 
 def T_sensor_from_ego_4x4(nusc: NuScenes, cam_sd_token: str) -> np.ndarray:
     sd = nusc.get("sample_data", cam_sd_token)
@@ -42,22 +83,6 @@ def T_sensor_from_ego_4x4(nusc: NuScenes, cam_sd_token: str) -> np.ndarray:
     T_ego_from_cam[:3, :3] = R
     T_ego_from_cam[:3,  3] = t
     return np.linalg.inv(T_ego_from_cam).astype(np.float32)  # cam←ego
-
-
-def T_sensor_to_ego_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
-    # sample_data -> calibrated_sensor to get sensor↔ego calibration at that timestamp
-    sd = nusc.get("sample_data", sd_token)
-    cs = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
-    # 4x4 rotation from sensor to ego
-    T = Quaternion(cs["rotation"]).transformation_matrix
-    # Add translation from sensor to ego
-    T[:3, 3] = np.asarray(cs["translation"], dtype=np.float32)
-    # sensor_in_ego transform
-    return T.astype(np.float32)
-
-def T_ego_to_sensor_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
-    # Invert sensor->ego to get ego->sensor
-    return np.linalg.inv(T_sensor_to_ego_4x4(nusc, sd_token)).astype(np.float32)
 
 def T_cam_from_lidar_4x4(nusc: NuScenes, cam_sd_token: str, lidar_sd_token: str) -> np.ndarray:
     # cam_in_ego
@@ -191,3 +216,19 @@ def compose_three_depth(dL: np.ndarray, dF: np.ndarray, dR: np.ndarray,
 
     return out
 
+def invdepth_valid_from_depth(depth_m: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    depth_max_m = 80.0
+    depth_min_m = 0.3
+
+    # depth_m: (H,W), meters; 0.0 = no hit
+    eps = 1e-9
+    valid = (depth_m > 0.0).astype(np.float32)
+    d = depth_m.copy()
+    d[d <= 0.0] = np.inf  # avoid 1/0; invalid stays invalid via 'valid' mask
+    inv = 1.0 / d
+    inv_min = 1.0 / max(depth_max_m, eps)
+    inv_max = 1.0 / max(depth_min_m, eps)
+    inv01 = (inv - inv_min) / max(inv_max - inv_min, eps)
+    inv01 = np.clip(inv01, 0.0, 1.0)
+    inv01[valid == 0.0] = 0.0  # keep invalid pixels at 0
+    return inv01.astype(np.float32), valid.astype(np.float32)

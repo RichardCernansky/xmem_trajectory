@@ -1,6 +1,5 @@
-import os, sys, torch
+import  torch
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader
 
 from memory_model.model import MemoryModel
 from trainer.utils import open_config, open_index
