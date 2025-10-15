@@ -10,7 +10,7 @@ from .optimizer import make_optimizer
 from .losses import best_of_k_loss
 from .metrics import metrics_best_of_k
 
-# TODO: SOLVE NORMALIZARION, deal with optimizer, update collate
+# TODO: SOLVE NORMALIZARION, deal with optimizer, update collate, mask=union detachment in predictior 
 
 class MemoryModel(nn.Module):
     def __init__(self, device: str):
@@ -32,7 +32,7 @@ class MemoryModel(nn.Module):
         C_r = self.train_config["C_r"]
         self.rgb_bev         = RGBLiftSplatEncoder(Hb, Wb, xmn, xmx, ymn, ymx, C_r=C_r).to(device)
         self.cam_to_frames   = CamBEVToFrames(c_in=C_r).to(device)
-        
+
         self.lidar_to_frames = LiDARToFrames(Hb, Wb, with_posenc=True).to(device)
 
         # XMem (uses its own flags from your wrapper; frozen or trainable via config)
@@ -55,6 +55,7 @@ class MemoryModel(nn.Module):
         cam_T    = batch["cam_T_cam_from_ego"].to(self.device, non_blocking=True)
         cam_dep  = batch["cam_depths"].to(self.device, non_blocking=True)
         lidar    = batch["lidar_bev_raw"].to(self.device, non_blocking=True)        # (B,T,4,H_bev,W_bev)
+        init_labels = batch["init_labels"]
         init0    = batch["bev_target_mask"][:, :1, 0].to(self.device).float()       # (B,1,H_bev,W_bev)
 
         # RGB → BEV → 3ch frames
@@ -66,7 +67,7 @@ class MemoryModel(nn.Module):
         frames_lidar = self.lidar_to_frames(lidar)                                  # (B,T,3,H_bev,W_bev)
 
         # ReasonNet flow inside XMem
-        seq_feats = self.xmem.forward(frames_cam, frames_lidar, init_masks=init0, init_labels=None)  # (B,T,D)
+        seq_feats = self.xmem.forward(frames_cam, frames_lidar, init_masks=init0, init_labels=init_labels)  # (B,T,D)
 
         # head
         traj_res_k, mode_logits = self.head(seq_feats)

@@ -64,6 +64,7 @@ class NuScenesLoader(Dataset):
         self.rows = rows
         self.dtype = dtype
 
+        self.normalize = True
         # image sizing (per-camera)
         self.H  = int(train_config.get("H", 400))
         self.cw = int(train_config.get("cw", 320))
@@ -91,14 +92,6 @@ class NuScenesLoader(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
-    # ---- BEV pixel mapping helpers ----
-    def _xy_to_bev_px(self, x: float, y: float) -> Tuple[int, int]:
-        """Map ego (x,y) meters → (iy, ix) BEV pixels with y_min→top, x_min→left."""
-        ix = int(np.floor((x - self.bev_x_min) / self.res_x))
-        iy = int(np.floor((y - self.bev_y_min) / self.res_y))
-        ix = np.clip(ix, 0, self.W_bev - 1)
-        iy = np.clip(iy, 0, self.H_bev - 1)
-        return int(iy), int(ix)
 
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -170,7 +163,7 @@ class NuScenesLoader(Dataset):
 
             # -------- target BEV mask from oriented box --------
             ann = _ann_for_instance_at_sample(self.nusc, row["obs_sample_tokens"][t], inst_tok)
-            m_box, (iy, ix) = bev_mask_from_ann(ann, lidar_sd)
+            m_box, (iy, ix) = bev_mask_from_ann(self, ann, lidar_sd)
             bev_center_list.append((iy, ix))
             bev_mask_list.append(torch.from_numpy(m_box)[None, ...])
 
@@ -199,7 +192,7 @@ class NuScenesLoader(Dataset):
             # Target focus in BEV
             "bev_target_center_px": bev_target_center_px,  # (T,2) (iy,ix)
             "bev_target_mask":      bev_target_mask,       # (T,1,H_bev,W_bev) uint8 (disk)
-
+            "init_labels":   [1],
             # Supervision
             "traj":          traj,  # (T_out,2)
             "last_pos":      last_pos,  # (2,)

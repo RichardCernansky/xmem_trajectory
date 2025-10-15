@@ -7,7 +7,7 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import Box
 
 
-def _T_global_to_ego_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+def T_global_to_ego_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
     """
     global -> ego 4x4 transform at the timestamp of the given sample_data.
     """
@@ -24,6 +24,15 @@ def xy_to_bev_px_float(self, x: float, y: float) -> Tuple[float, float]:
     ix = float(np.clip(ix, 0.0, self.W_bev - 1.0))
     iy = float(np.clip(iy, 0.0, self.H_bev - 1.0))
     return iy, ix
+
+# ---- BEV pixel mapping helpers ----
+def xy_to_bev_px(self, x: float, y: float) -> Tuple[int, int]:
+    """Map ego (x,y) meters → (iy, ix) BEV pixels with y_min→top, x_min→left."""
+    ix = int(np.floor((x - self.bev_x_min) / self.res_x))
+    iy = int(np.floor((y - self.bev_y_min) / self.res_y))
+    ix = np.clip(ix, 0, self.W_bev - 1)
+    iy = np.clip(iy, 0, self.H_bev - 1)
+    return int(iy), int(ix)
 
 def order_poly_clockwise(self, P: np.ndarray) -> np.ndarray:
     c = P.mean(axis=0)
@@ -62,7 +71,7 @@ def rasterize_convex_poly_bev(self, verts_iyix: np.ndarray) -> np.ndarray:
     return m
 
 def ann_box_poly_ego_xy(self, ann: dict, lidar_sd: str) -> Optional[np.ndarray]:
-    T_ge = _T_global_to_ego_4x4(self.nusc, lidar_sd)
+    T_ge = T_global_to_ego_4x4(self.nusc, lidar_sd)
     box = Box(center=ann["translation"], size=ann["size"], orientation=Quaternion(ann["rotation"]))
     Cg = box.corners().T.astype(np.float32)
     Cg = np.hstack([Cg, np.ones((8,1), dtype=np.float32)])
@@ -72,23 +81,23 @@ def ann_box_poly_ego_xy(self, ann: dict, lidar_sd: str) -> Optional[np.ndarray]:
     if len(idx) < 3:
         return None
     P = Ce[idx[:4]] if len(idx) >= 4 else Ce[idx]
-    P = self._order_poly_clockwise(P)
+    P = order_poly_clockwise(self, P)
     return P
 
 def bev_mask_from_ann(self, ann: dict, lidar_sd: str) -> Tuple[np.ndarray, Tuple[int,int]]:
-    P = self._ann_box_poly_ego_xy(ann, lidar_sd)
+    P = ann_box_poly_ego_xy(self, ann, lidar_sd)
     if P is None:
         ctr_g = np.array(ann["translation"], dtype=np.float32)
-        T_ge = _T_global_to_ego_4x4(self.nusc, lidar_sd)
+        T_ge = T_global_to_ego_4x4(self.nusc, lidar_sd)
         ctr_e = (T_ge @ np.array([ctr_g[0], ctr_g[1], ctr_g[2], 1.0], dtype=np.float32))[:3]
-        iy, ix = self._xy_to_bev_px(float(ctr_e[0]), float(ctr_e[1]))
+        iy, ix = xy_to_bev_px(self, float(ctr_e[0]), float(ctr_e[1]))
         iy, ix = int(round(iy)), int(round(ix))
         m = np.zeros((self.H_bev, self.W_bev), dtype=np.uint8)
         m[iy, ix] = 1
         return m, (iy, ix)
-    verts_iyix = np.stack([*zip(*[self._xy_to_bev_px_float(x, y) for x, y in P])], axis=-1)
+    verts_iyix = np.stack([*zip(*[xy_to_bev_px_float(self, x, y) for x, y in P])], axis=-1)
     verts_iyix = np.array([[iy, ix] for iy, ix in verts_iyix], dtype=np.float32)
-    mask = self._rasterize_convex_poly_bev(verts_iyix)
+    mask = rasterize_convex_poly_bev(self, verts_iyix)
     ctr = np.mean(P, axis=0)
-    ciy, cix = self._xy_to_bev_px_float(float(ctr[0]), float(ctr[1]))
+    ciy, cix = xy_to_bev_px_float(self, float(ctr[0]), float(ctr[1]))
     return mask, (int(round(ciy)), int(round(cix)))

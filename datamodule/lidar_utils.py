@@ -4,6 +4,34 @@ from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 
+def pose_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    """
+    Ego pose (ego -> global) at the timestamp of a given sample_data token.
+    Returns T_global_from_ego (4x4, float32).
+    """
+    sd = nusc.get("sample_data", sd_token)
+    ep = nusc.get("ego_pose", sd["ego_pose_token"])
+    T = Quaternion(ep["rotation"]).transformation_matrix  # rotation (ego->global)
+    T[:3, 3] = np.asarray(ep["translation"], dtype=np.float32)  # translation in global
+    return T.astype(np.float32)
+
+def T_sensor_to_ego_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    """
+    Calibrated sensor extrinsic: sensor -> ego (4x4, float32).
+    """
+    sd = nusc.get("sample_data", sd_token)
+    cs = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
+    T = Quaternion(cs["rotation"]).transformation_matrix  # rotation (sensor->ego)
+    T[:3, 3] = np.asarray(cs["translation"], dtype=np.float32)  # translation in ego
+    return T.astype(np.float32)
+
+def T_ego_to_sensor_4x4(nusc: NuScenes, sd_token: str) -> np.ndarray:
+    """
+    Inverse of calibrated extrinsic: ego -> sensor (4x4, float32).
+    """
+    return np.linalg.inv(T_sensor_to_ego_4x4(nusc, sd_token)).astype(np.float32)
+
+
 def lidar_points_ego(self, lidar_sd_token: str) -> np.ndarray:
         """LiDAR sweep → ego frame @ that timestamp. Returns (N,4): [x,y,z,intensity]."""
         path = self.nusc.get_sample_data_path(lidar_sd_token)
@@ -23,12 +51,12 @@ def lidar_points_ego(self, lidar_sd_token: str) -> np.ndarray:
 
 def lidar_bev_from_points_fixed(self, pts_ego: np.ndarray) -> np.ndarray:
     """
-    Aggregate ego-frame points into a FIXED BEV grid: (H_raw, W_raw),
+    Aggregate ego-frame points into a FIXED BEV grid: (H_bev, W_bev),
     channels = [log1p(count), mean_z, max_z, mean_intensity].
     Mapping: y_min -> top rows, y_max -> bottom rows (image rows increase downward).
     """
     C = 4
-    bev = np.zeros((C, self.H_raw, self.W_raw), dtype=np.float32)
+    bev = np.zeros((C, self.H_bev, self.W_bev), dtype=np.float32)
     if pts_ego.size == 0:
         return bev
 
@@ -41,13 +69,13 @@ def lidar_bev_from_points_fixed(self, pts_ego: np.ndarray) -> np.ndarray:
     x = x[m]; y = y[m]; z = z[m]; inten = inten[m]
 
     # Discretize with inferred meters-per-pixel
-    ix = np.floor((x - self.bev_x_min) / self.res_x).astype(np.int64)  # [0..W_raw-1]
-    iy = np.floor((y - self.bev_y_min) / self.res_y).astype(np.int64)  # [0..H_raw-1]
-    np.clip(ix, 0, self.W_raw - 1, out=ix)
-    np.clip(iy, 0, self.H_raw - 1, out=iy)
-    lin = iy * self.W_raw + ix  # flattened indices
+    ix = np.floor((x - self.bev_x_min) / self.res_x).astype(np.int64)  # [0..W_bev-1]
+    iy = np.floor((y - self.bev_y_min) / self.res_y).astype(np.int64)  # [0..H_bev-1]
+    np.clip(ix, 0, self.W_bev - 1, out=ix)
+    np.clip(iy, 0, self.H_bev - 1, out=iy)
+    lin = iy * self.W_bev + ix  # flattened indices
 
-    HW = self.H_raw * self.W_raw
+    HW = self.H_bev * self.W_bev
     count = np.bincount(lin, minlength=HW).astype(np.float32)
     sum_z = np.bincount(lin, weights=z, minlength=HW).astype(np.float32)
     sum_i = np.bincount(lin, weights=inten, minlength=HW).astype(np.float32)
@@ -59,10 +87,10 @@ def lidar_bev_from_points_fixed(self, pts_ego: np.ndarray) -> np.ndarray:
     mean_i = sum_i / (count + eps)
 
     # reshape & stabilize
-    count = count.reshape(self.H_raw, self.W_raw)
-    mean_z = mean_z.reshape(self.H_raw, self.W_raw)
-    max_z  = max_z.reshape(self.H_raw, self.W_raw)
-    mean_i = mean_i.reshape(self.H_raw, self.W_raw)
+    count = count.reshape(self.H_bev, self.W_bev)
+    mean_z = mean_z.reshape(self.H_bev, self.W_bev)
+    max_z  = max_z.reshape(self.H_bev, self.W_bev)
+    mean_i = mean_i.reshape(self.H_bev, self.W_bev)
 
     mean_z = np.clip(mean_z, -3.0, 5.0)
     max_z  = np.clip(max_z,  -3.0, 5.0)

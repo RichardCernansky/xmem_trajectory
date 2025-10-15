@@ -4,10 +4,10 @@
   "max_mid_term_frames": 3,           
   "num_prototypes": 96,               
   "max_long_term_elements": 128,     
-  "enable_long_term": true,         
+  "enable_long_term": false,         
   "deep_update_every": 1000000000,   
   "top_k": 10,                       
   "benchmark": false,
-  "enable_long_term_count_usage": true,
+  "enable_long_term_count_usage": false,
   "single_object": true             
 }

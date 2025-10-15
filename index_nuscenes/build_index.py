@@ -1,11 +1,12 @@
 # build_index_5to1.py
 import os, pickle, argparse, random
+from data.configs.filenames import DATAROOT, TRAIN_INDEX, VAL_INDEX
 from nuscenes.nuscenes import NuScenes
 from index_nuscenes.agent_index import build_agent_sequence_index
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataroot", type=str, default=r"e:\nuscenes")
+    ap.add_argument("--dataroot", type=str, default=DATAROOT)
     ap.add_argument("--version",  type=str, default="v1.0-trainval")
     ap.add_argument("--cameras",  nargs="+",
                     default=["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"])
@@ -51,13 +52,13 @@ def main():
     val_rows   = rows[n_train:n_train + n_val]
 
     # Save
-    with open(f"train_{args.out_prefix}.pkl", "wb") as f:
+    with open(TRAIN_INDEX, "wb") as f:
         pickle.dump(train_rows, f)
-    with open(f"val_{args.out_prefix}.pkl", "wb") as f:
+    with open(VAL_INDEX, "wb") as f:
         pickle.dump(val_rows, f)
 
     print(f"Built pool: {len(rows)} rows  ->  train: {len(train_rows)}  |  val: {len(val_rows)}")
-    print(f"Saved to: train_{args.out_prefix}.pkl  /  val_{args.out_prefix}.pkl")
+    print(f"Saved to: {TRAIN_INDEX}  /  {VAL_INDEX}")
 
 if __name__ == "__main__":
     main()

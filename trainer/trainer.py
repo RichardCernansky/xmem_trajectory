@@ -24,7 +24,7 @@ def run_epoch(model, mode, loader, ep: int):
             m, pred_abs_k = model.validation_step(batch)
                # pred_abs_k: (B, K, T, 2) absolute ego XY; mode_probs: (B, K) optional
             viz = TrajVisualizer(save_dir=TRAJ_VIS_OUT_PATH, dpi=150, draw_seams=True)
-            out_path = viz.render_batch(batch, ep, pred_abs_k,  title="Trimmed pano | all modes")
+            #add visualization
 
         bsz = batch["traj"].shape[0]
         sum_ade  += m["ADE"]   * bsz

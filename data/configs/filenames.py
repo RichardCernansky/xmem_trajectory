@@ -1,3 +1,8 @@
+
+REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
+DATAROOT = r"e:\nuscenes"
+XMEM_CHECKPOINT = "XMem\checkpoints\XMem-s012.pth"
+XMEM_CONFIG = "data/configs/xmem_config.json"
 TRAIN_CONFIG  = "data/configs/train_config.json"
 TRAIN_INDEX = "data/indexes/train_agents_index.pkl"
 VAL_INDEX  = "data/indexes/val_agents_index.pkl"

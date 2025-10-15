@@ -4,10 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from data.configs.filenames import XMEM_CHECKPOINT, TRAIN_CONFIG, XMEM_CONFIG
+from data.configs.filenames import XMEM_CHECKPOINT, TRAIN_CONFIG, XMEM_CONFIG, REPO_ROOT
 from trainer.utils import open_config
 
-REPO_ROOT = r"C:\Users\Lukas\richard\xmem_e2e\XMem"
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -66,8 +65,37 @@ class XMemBackboneWrapper(nn.Module):
             dec.train(mode) if self.train_config.get("train_xmem_decoder") else dec.eval()
         return self
 
+    @staticmethod
+    def _masked_avg_pool_single(hid: torch.Tensor,
+                                prob_with_bg: Optional[torch.Tensor],
+                                ch: int = 1,
+                                eps: float = 1e-6) -> torch.Tensor:
+        if hid.dim() == 5:   # [1,K,C,H,W]
+            hid_sel = hid[:, ch-1]
+        elif hid.dim() == 4: # [1,C,H,W]
+            hid_sel = hid
+        else:
+            raise RuntimeError(f"Unexpected hidden shape: {tuple(hid.shape)}")
 
-    def forward(self, frames_cam, frames_lidar, *, init_masks=None):
+        if prob_with_bg is None:
+            return hid_sel.mean(dim=(2, 3)).squeeze(0)
+
+        if prob_with_bg.dim() == 3:
+            prob_with_bg = prob_with_bg.unsqueeze(0)  # [1,K,Hm, Wm]
+        if ch >= prob_with_bg.size(1):
+            return hid_sel.mean(dim=(2, 3)).squeeze(0)
+
+        m = prob_with_bg[:, ch:ch+1]
+        if m.shape[-2:] != hid_sel.shape[-2:]:
+            m = F.interpolate(m, size=hid_sel.shape[-2:], mode="bilinear", align_corners=False)
+        num = (hid_sel * m).sum(dim=(2, 3))
+        den = m.sum(dim=(2, 3)).clamp_min(eps)
+        out = (num / den).squeeze(0)
+        if not torch.isfinite(out).all():
+            return hid_sel.mean(dim=(2, 3)).squeeze(0)
+        return out
+
+    def forward(self, frames_cam, frames_lidar, *, init_masks, init_labels):
         """
         
         - Write on t < t_in - 1.
@@ -91,7 +119,7 @@ class XMemBackboneWrapper(nn.Module):
             if m0 is not None and m0.ndim == 2: m0 = m0.unsqueeze(0)      # (1,H,W)
             if m0 is None:
                 m0 = torch.ones(1, H, W, dtype=torch.float32, device=dev) # fallback
-            lab0 = [1]                                                    # single-object
+            lab0 = init_labels[b]                                                    # single-object
             mm.all_labels = lab0
 
             seq_feats = []
@@ -103,16 +131,16 @@ class XMemBackboneWrapper(nn.Module):
 
                 # --- camera key + decoder pyramid (for WRITE + DECODE) ---
                 img_cam,_ = pad_divide_by(frames_cam[b, t], 16); img_cam = img_cam.unsqueeze(0)
-                _, _, _, f16c, f8c, f4c = self.xmem_core.encode_key(
-                    img_cam, need_ek=False, need_sk=False
+                k_cam, sh_cam, sel_cam, f16c, f8c, f4c = self.xmem_core.encode_key(
+                    img_cam, need_ek=True, need_sk=write_this
                 )
                 multi_cam = (f16c, f8c, f4c)
 
                 # --- LiDAR key (for READ) ---
                 img_lid,_ = pad_divide_by(frames_lidar[b, t], 16); img_lid = img_lid.unsqueeze(0)
-                k_lid, sh_lid, sel_lid, _, _, _ = self.xmem_core.encode_key(
-                    img_lid, need_ek=True, need_sk=write_this
-                )
+                k_lid, _, sel_lid, _, _, _ = self.xmem_core.encode_key(
+                img_lid, need_ek=True, need_sk=False
+            )
 
                 # --- READ (only if we already have memory) & get XMem mask ---
                 pred_prob_with_bg = None
@@ -139,6 +167,14 @@ class XMemBackboneWrapper(nn.Module):
                             # fallback if memory not yet written (shouldn't happen after t=0)
                             m_pad,_ = pad_divide_by(m0.float(), 16)
                             to_write = aggregate(m_pad, dim=0)
+                
+                K_write = int(to_write.shape[0] - 1) if to_write is not None else 0
+                if write_this and K_write < 1:
+                    # last-ditch fallback: write a 1-object mask of ones around the target
+                    # (avoid calling encode_value with empty K)
+                    m_pad, _ = pad_divide_by(m0.float(), 16)
+                    to_write = aggregate(m_pad, dim=0)
+                    K_write = 1
 
                 # --- WRITE: camera (key,value) with the chosen mask ---
                 if to_write is not None:
@@ -152,7 +188,7 @@ class XMemBackboneWrapper(nn.Module):
                         img_cam, f16c, h_cur, to_write[1:].unsqueeze(0), is_deep_update=False
                     )
                     mm.add_memory(
-                        k_lid, sh_lid, v_cam, lab0,
+                        k_cam, sh_cam, v_cam, lab0,
                         selection=sel_lid if self.xmem_config["enable_long_term"] else None
                     )
                     mm.set_hidden(h2)
@@ -162,14 +198,8 @@ class XMemBackboneWrapper(nn.Module):
                 if hidden_local is not None:
                     # Prefer masked pooling with current XMem union mask; fallback to mean
                     if pred_prob_with_bg is not None:
-                        if pred_prob_with_bg.shape[0] > 1:
-                            # union over K objects (K=1 in your case)
-                            union = pred_prob_with_bg[1:].max(dim=0)[0].unsqueeze(0).unsqueeze(0)  # (1,1,Hs,Ws)
-                            if union.shape[-2:] != hidden_local.shape[-2:]:
-                                union = F.interpolate(union, size=hidden_local.shape[-2:], mode="bilinear", align_corners=False)
-                            num = (hidden_local * union).sum(dim=(2,3))
-                            den = union.sum(dim=(2,3)).clamp_min(1e-6)
-                            feat = (num / den).squeeze(0)    # [C]
+                        if pred_prob_with_bg.shape[0] > 1: #only if having any foreground
+                            feat = self._masked_avg_pool_single(hidden_local, pred_prob_with_bg, ch=1)
                         else:
                             feat = hidden_local.mean(dim=(2,3)).squeeze(0)
                     else:
