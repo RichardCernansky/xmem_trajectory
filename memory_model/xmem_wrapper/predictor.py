@@ -97,11 +97,9 @@ class XMemBackboneWrapper(nn.Module):
 
     def forward(self, frames_cam, frames_lidar, *, init_masks, init_labels):
         """
-        
-        - Write on t < t_in - 1.
-        - At t=0: write with provided TARGET mask (GT).
-        - For t>0: write with XMem's predicted mask at that step.
-        Returns: (B,T,D) pooled timestep features.
+        - Writes LiDAR key (k_lid) + camera value (v_cam)
+        - Reads using LiDAR key (k_lid)
+        - Returns (B,T,D) pooled timestep features
         """
         B, T, _, H, W = frames_cam.shape
         dev = self.device
@@ -111,38 +109,44 @@ class XMemBackboneWrapper(nn.Module):
         all_seq_feats = []
 
         for b in range(B):
-            mm = MemoryManager(config=self.xmem_config.copy()); mm.ti = -1; mm.set_hidden(None)
+            mm = MemoryManager(config=self.xmem_config.copy())
+            mm.ti = -1
+            mm.set_hidden(None)
 
-            # --- t=0 target mask (required once). If none, fallback to ones. ---
+            # --- t=0 target mask (required once). ---
             m0 = None if init_masks is None else init_masks[b]
-            if m0 is not None and not torch.is_tensor(m0): m0 = torch.as_tensor(m0)
-            if m0 is not None and m0.ndim == 2: m0 = m0.unsqueeze(0)      # (1,H,W)
+            if m0 is not None and not torch.is_tensor(m0): 
+                m0 = torch.as_tensor(m0)
+            if m0 is not None and m0.ndim == 2: 
+                m0 = m0.unsqueeze(0)
             if m0 is None:
-                m0 = torch.ones(1, H, W, dtype=torch.float32, device=dev) # fallback
-            lab0 = init_labels[b]                                                    # single-object
+                m0 = torch.ones(1, H, W, dtype=torch.float32, device=dev)
+            lab0 = init_labels[b]
             mm.all_labels = lab0
 
             seq_feats = []
-            have_memory = False  # becomes True after we first write
+            have_memory = False
 
             for t in range(T):
                 mm.ti += 1
-                write_this = (t < T - 1)  # write every frame except last
+                write_this = (t < T - 1)
 
-                # --- camera key + decoder pyramid (for WRITE + DECODE) ---
-                img_cam,_ = pad_divide_by(frames_cam[b, t], 16); img_cam = img_cam.unsqueeze(0)
+                # --- camera features (for value + decode) ---
+                img_cam, _ = pad_divide_by(frames_cam[b, t], 16)
+                img_cam = img_cam.unsqueeze(0)
                 k_cam, sh_cam, sel_cam, f16c, f8c, f4c = self.xmem_core.encode_key(
                     img_cam, need_ek=True, need_sk=write_this
                 )
                 multi_cam = (f16c, f8c, f4c)
 
-                # --- LiDAR key (for READ) ---
-                img_lid,_ = pad_divide_by(frames_lidar[b, t], 16); img_lid = img_lid.unsqueeze(0)
+                # --- LiDAR features (for key + read) ---
+                img_lid, _ = pad_divide_by(frames_lidar[b, t], 16)
+                img_lid = img_lid.unsqueeze(0)
                 k_lid, _, sel_lid, _, _, _ = self.xmem_core.encode_key(
-                img_lid, need_ek=True, need_sk=False
-            )
+                    img_lid, need_ek=True, need_sk=False
+                )
 
-                # --- READ (only if we already have memory) & get XMem mask ---
+                # --- READ phase (only if we already have memory) ---
                 pred_prob_with_bg = None
                 hidden_local = None
                 if have_memory:
@@ -150,63 +154,60 @@ class XMemBackboneWrapper(nn.Module):
                     hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
                         multi_cam, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
                     )
-                    pred_prob_with_bg = pred_prob_with_bg[0]  # (1+K, Hs, Ws)
+                    pred_prob_with_bg = pred_prob_with_bg[0] #.squeeze purpose
 
                 # --- Build WRITE mask ---
                 to_write = None
                 if write_this:
                     if t == 0:
-                        # use GT target mask at t=0
-                        m_pad,_ = pad_divide_by(m0.float(), 16)       # (1,Hs,Ws)
-                        to_write = aggregate(m_pad, dim=0)            # (1+K, Hs, Ws) with K=1
+                        m_pad, _ = pad_divide_by(m0.float(), 16)
+                        to_write = aggregate(m_pad, dim=0)
                     else:
-                        # use XMem-predicted mask at t>0 (if available)
                         if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
-                            to_write = pred_prob_with_bg.detach()     # already (1+K,Hs,Ws)
+                            to_write = pred_prob_with_bg.detach()
                         else:
-                            # fallback if memory not yet written (shouldn't happen after t=0)
-                            m_pad,_ = pad_divide_by(m0.float(), 16)
+                            m_pad, _ = pad_divide_by(m0.float(), 16)
                             to_write = aggregate(m_pad, dim=0)
-                
+
                 K_write = int(to_write.shape[0] - 1) if to_write is not None else 0
                 if write_this and K_write < 1:
-                    # last-ditch fallback: write a 1-object mask of ones around the target
-                    # (avoid calling encode_value with empty K)
                     m_pad, _ = pad_divide_by(m0.float(), 16)
                     to_write = aggregate(m_pad, dim=0)
                     K_write = 1
 
-                # --- WRITE: camera (key,value) with the chosen mask ---
+                # --- WRITE: store LiDAR key with camera value ---
                 if to_write is not None:
-                    # Expect K=1; ensure hidden state matches
                     h_cur = mm.get_hidden()
-                    need_init = (h_cur is None) or (getattr(h_cur, "shape", None) is not None and h_cur.shape[1] != (to_write.shape[0]-1))
+                    need_init = (
+                        h_cur is None or 
+                        (getattr(h_cur, "shape", None) is not None 
+                        and h_cur.shape[1] != (to_write.shape[0] - 1))
+                    )
                     if need_init:
-                        mm.create_hidden_state(int(to_write.shape[0]-1), k_lid); h_cur = mm.get_hidden()
+                        mm.create_hidden_state(int(to_write.shape[0] - 1), k_lid)
+                        h_cur = mm.get_hidden()
 
+                    # encode value from camera features
                     v_cam, h2 = self.xmem_core.encode_value(
                         img_cam, f16c, h_cur, to_write[1:].unsqueeze(0), is_deep_update=False
                     )
+
+                    # store: LiDAR key + camera value
                     mm.add_memory(
-                        k_cam, sh_cam, v_cam, lab0,
+                        k_lid, sh_cam, v_cam, lab0,
                         selection=sel_lid if self.xmem_config["enable_long_term"] else None
                     )
                     mm.set_hidden(h2)
                     have_memory = True
 
-                # --- FEATURE for this timestep ---
+                # --- FEATURE extraction for this timestep ---
                 if hidden_local is not None:
-                    # Prefer masked pooling with current XMem union mask; fallback to mean
-                    if pred_prob_with_bg is not None:
-                        if pred_prob_with_bg.shape[0] > 1: #only if having any foreground
-                            feat = self._masked_avg_pool_single(hidden_local, pred_prob_with_bg, ch=1)
-                        else:
-                            feat = hidden_local.mean(dim=(2,3)).squeeze(0)
+                    if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
+                        feat = self._masked_avg_pool_single(hidden_local, pred_prob_with_bg, ch=1)
                     else:
-                        feat = hidden_local.mean(dim=(2,3)).squeeze(0)
+                        feat = hidden_local.mean(dim=(2, 3)).squeeze(0)
                 else:
-                    # At t=0 before first read, use key as a crude feature
-                    feat = k_lid.mean(dim=(2,3)).squeeze(0)           # [D_key]
+                    feat = k_lid.mean(dim=(2, 3)).squeeze(0)
 
                 seq_feats.append(feat)
 

@@ -10,7 +10,7 @@ from .optimizer import make_optimizer
 from .losses import best_of_k_loss
 from .metrics import metrics_best_of_k
 
-# TODO: SOLVE NORMALIZARION, deal with optimizer, update collate, mask=union detachment in predictior 
+# TODO: SOLVE NORMALIZARION, deal with optimizer, mask=union detachment in predictior , deal with deep update not working
 
 class MemoryModel(nn.Module):
     def __init__(self, device: str):
@@ -50,7 +50,7 @@ class MemoryModel(nn.Module):
 
     def forward(self, batch):
         # inputs come from your dataloader (already using config H/cw etc.)
-        cam_imgs = batch["cam_imgs"].to(self.device, non_blocking=True)             # (B,T,C,3,H,cw)
+        cam_imgs = batch["cam_imgs"].to(self.device, non_blocking=True)             # (B,T,Cams,3,H,cw)
         cam_K    = batch["cam_K_scaled"].to(self.device, non_blocking=True)
         cam_T    = batch["cam_T_cam_from_ego"].to(self.device, non_blocking=True)
         cam_dep  = batch["cam_depths"].to(self.device, non_blocking=True)
