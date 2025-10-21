@@ -23,6 +23,15 @@ def load_xmem(backbone_ckpt=XMEM_CHECKPOINT, device="cuda"):
     net.to(device)
     return net
 
+def pad_to_same16(img_cam, img_lid):
+    _, H, W = img_cam.shape
+    H16 = (H + 15) // 16 * 16
+    W16 = (W + 15) // 16 * 16
+    def pad(img):
+        dH, dW = H16 - img.shape[-2], W16 - img.shape[-1]
+        return F.pad(img, (0, dW, 0, dH))  # pad right/bottom
+    return pad(img_cam), pad(img_lid)
+
 # to do  - final feats graph will probably be corrupted bcause of inplace ops
 # detach union?
 class XMemBackboneWrapper(nn.Module):
@@ -50,6 +59,15 @@ class XMemBackboneWrapper(nn.Module):
             for p in self.xmem_core.decoder.parameters():
                 p.requires_grad = True
 
+    def reset_memory(self, B: int):
+        """Reset memory managers for a new batch of B sequences."""
+        self.mms = []
+        for _ in range(B):
+            mm = MemoryManager(config=self.xmem_config.copy())
+            mm.ti = -1
+            mm.set_hidden(None)
+            self.mms.append(mm)
+        self.have_memory = [False] * B
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -95,122 +113,127 @@ class XMemBackboneWrapper(nn.Module):
             return hid_sel.mean(dim=(2, 3)).squeeze(0)
         return out
 
-    def forward(self, frames_cam, frames_lidar, *, init_masks, init_labels):
-        """
-        - Writes LiDAR key (k_lid) + camera value (v_cam)
-        - Reads using LiDAR key (k_lid)
-        - Returns (B,T,D) pooled timestep features
-        """
-        B, T, _, H, W = frames_cam.shape
+    def forward_step(self, t: int, frames_cam_t, frames_lidar_t, *, init_masks, init_labels):
         dev = self.device
-        frames_cam   = frames_cam.to(dev, non_blocking=True)
-        frames_lidar = frames_lidar.to(dev, non_blocking=True)
-
-        all_seq_feats = []
+        B, _, H, W = frames_cam_t.shape
+        if t == 0:
+            self.reset_memory(B)
+        feats_out = []
 
         for b in range(B):
-            mm = MemoryManager(config=self.xmem_config.copy())
-            mm.ti = -1
-            mm.set_hidden(None)
-
-            # --- t=0 target mask (required once). ---
-            m0 = None if init_masks is None else init_masks[b]
-            if m0 is not None and not torch.is_tensor(m0): 
-                m0 = torch.as_tensor(m0)
-            if m0 is not None and m0.ndim == 2: 
-                m0 = m0.unsqueeze(0)
-            if m0 is None:
-                m0 = torch.ones(1, H, W, dtype=torch.float32, device=dev)
+            mm = self.mms[b]
+            mm.ti = t
+            m0 = init_masks[b].to(dev)
             lab0 = init_labels[b]
+            if isinstance(lab0, torch.Tensor):
+                lab0 = [int(x) for x in lab0.flatten().tolist()]
+            elif isinstance(lab0, (list, tuple)):
+                lab0 = list(map(int, lab0))
+            else:
+                lab0 = [int(lab0)]
             mm.all_labels = lab0
 
-            seq_feats = []
-            have_memory = False
+            img_cam, img_lid = pad_to_same16(frames_cam_t[b], frames_lidar_t[b])
+            k_cam, sh_cam, sel_cam, f16c, f8c, f4c = self.xmem_core.encode_key(
+                img_cam.unsqueeze(0), need_ek=True, need_sk=True
+            )
+            k_lid, sh_lid, sel_lid, f16l, f8l, f4l = self.xmem_core.encode_key(
+                img_lid.unsqueeze(0), need_ek=True, need_sk=True
+            )
+            multi_cam = (f16c, f8c, f4c)
 
-            for t in range(T):
-                mm.ti += 1
-                write_this = (t < T - 1)
-
-                # --- camera features (for value + decode) ---
-                img_cam, _ = pad_divide_by(frames_cam[b, t], 16)
-                img_cam = img_cam.unsqueeze(0)
-                k_cam, sh_cam, sel_cam, f16c, f8c, f4c = self.xmem_core.encode_key(
-                    img_cam, need_ek=True, need_sk=write_this
-                )
-                multi_cam = (f16c, f8c, f4c)
-
-                # --- LiDAR features (for key + read) ---
-                img_lid, _ = pad_divide_by(frames_lidar[b, t], 16)
-                img_lid = img_lid.unsqueeze(0)
-                k_lid, _, sel_lid, _, _, _ = self.xmem_core.encode_key(
-                    img_lid, need_ek=True, need_sk=False
-                )
-
-                # --- READ phase (only if we already have memory) ---
-                pred_prob_with_bg = None
-                hidden_local = None
-                if have_memory:
-                    mem_rd = mm.match_memory(k_lid, sel_lid).unsqueeze(0)
-                    hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
-                        multi_cam, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
-                    )
-                    pred_prob_with_bg = pred_prob_with_bg[0] #.squeeze purpose
-
-                # --- Build WRITE mask ---
-                to_write = None
-                if write_this:
-                    if t == 0:
-                        m_pad, _ = pad_divide_by(m0.float(), 16)
-                        to_write = aggregate(m_pad, dim=0)
-                    else:
-                        if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
-                            to_write = pred_prob_with_bg.detach()
-                        else:
-                            m_pad, _ = pad_divide_by(m0.float(), 16)
-                            to_write = aggregate(m_pad, dim=0)
-
-                K_write = int(to_write.shape[0] - 1) if to_write is not None else 0
-                if write_this and K_write < 1:
-                    m_pad, _ = pad_divide_by(m0.float(), 16)
-                    to_write = aggregate(m_pad, dim=0)
-                    K_write = 1
-
-                # --- WRITE: store LiDAR key with camera value ---
-                if to_write is not None:
+            if t < 5:
+                m_pad, _ = pad_divide_by(m0.float(), 16)
+                to_write = aggregate(m_pad, dim=0)  # (1+K,H,W)
+                K_write = int(to_write.shape[0] - 1)
+                if K_write > 0:
                     h_cur = mm.get_hidden()
-                    need_init = (
-                        h_cur is None or 
-                        (getattr(h_cur, "shape", None) is not None 
-                        and h_cur.shape[1] != (to_write.shape[0] - 1))
-                    )
-                    if need_init:
-                        mm.create_hidden_state(int(to_write.shape[0] - 1), k_lid)
+                    if (h_cur is None) or (h_cur.shape[1] != K_write):
+                        mm.create_hidden_state(K_write, k_lid)
                         h_cur = mm.get_hidden()
 
-                    # encode value from camera features
                     v_cam, h2 = self.xmem_core.encode_value(
-                        img_cam, f16c, h_cur, to_write[1:].unsqueeze(0), is_deep_update=False
+                        img_cam.unsqueeze(0), f16c, h_cur,
+                        to_write[1:].unsqueeze(0),
+                        is_deep_update=False
                     )
 
-                    # store: LiDAR key + camera value
-                    mm.add_memory(
-                        k_lid, sh_cam, v_cam, lab0,
-                        selection=sel_lid if self.xmem_config["enable_long_term"] else None
-                    )
+                    bsz, Kc, Cc, Hc, Wc = v_cam.shape
+                    Hs_k, Ws_k = k_lid.shape[-2:]
+                    if (Hc, Wc) != (Hs_k, Ws_k):
+                        v4 = v_cam.view(bsz, Kc * Cc, Hc, Wc)
+                        v4 = F.interpolate(v4, size=(Hs_k, Ws_k), mode="bilinear", align_corners=False)
+                        v_cam = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
+
+                    assert v_cam.shape[1] == K_write, f"K mismatch: {v_cam.shape[1]} vs {K_write}"
+                    obj_ids = list(range(1, K_write + 1))
+                    mm.add_memory(k_lid, sh_lid, v_cam, obj_ids, selection=sel_lid)
                     mm.set_hidden(h2)
-                    have_memory = True
 
-                # --- FEATURE extraction for this timestep ---
-                if hidden_local is not None:
-                    if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
-                        feat = self._masked_avg_pool_single(hidden_local, pred_prob_with_bg, ch=1)
-                    else:
-                        feat = hidden_local.mean(dim=(2, 3)).squeeze(0)
+                self.have_memory[b] = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
+                feats_out.append(None)
+                continue
+
+
+            have_real = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
+            hidden_local, pred_prob_with_bg = None, None
+            if have_real:
+                mem_rd = mm.match_memory(k_lid, sel_lid if self.enable_long_term else None).unsqueeze(0)
+                hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
+                    multi_cam, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
+                )
+                pred_prob_with_bg = pred_prob_with_bg[0]
+
+            do_write = (self.mem_every > 0 and t % self.mem_every == 0)
+            if do_write:
+                if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
+                    to_write = pred_prob_with_bg.detach()
                 else:
-                    feat = k_lid.mean(dim=(2, 3)).squeeze(0)
+                    m_pad, _ = pad_divide_by(m0.float(), 16)
+                    to_write = aggregate(m_pad, dim=0)
+                K_write = int(to_write.shape[0] - 1)
+                if K_write > 0:
+                    h_cur = mm.get_hidden()
+                    if (h_cur is None) or (h_cur.shape[1] != K_write):
+                        mm.create_hidden_state(K_write, k_lid)
+                        h_cur = mm.get_hidden()
 
-                seq_feats.append(feat)
+                    v_cam, h2 = self.xmem_core.encode_value(
+                        img_cam.unsqueeze(0), f16c, h_cur,
+                        to_write[1:].unsqueeze(0),
+                        is_deep_update=(self.deep_update_every > 0 and t % self.deep_update_every == 0)
+                    )
 
-            all_seq_feats.append(torch.stack(seq_feats, dim=0))  # (T,D)
+                    bsz, Kc, Cc, Hc, Wc = v_cam.shape
+                    Hs_k, Ws_k = k_lid.shape[-2:]
+                    if (Hc, Wc) != (Hs_k, Ws_k):
+                        v4 = v_cam.view(bsz, Kc * Cc, Hc, Wc)
+                        v4 = F.interpolate(v4, size=(Hs_k, Ws_k), mode="bilinear", align_corners=False)
+                        v_cam = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
 
-        return torch.stack(all_seq_feats, dim=0)  # (B,T,D)
+                    assert v_cam.shape[1] == K_write, f"K mismatch: {v_cam.shape[1]} vs {K_write}"
+                    obj_ids = list(range(1, K_write + 1))
+                    mm.add_memory(k_lid, sh_lid, v_cam, obj_ids, selection=sel_lid)
+                    mm.set_hidden(h2)
+
+            self.have_memory[b] = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
+
+            if hidden_local is None:
+                feats_out.append(None)
+                continue
+
+            if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
+                feat = self._masked_avg_pool_single(hidden_local, pred_prob_with_bg, ch=1)
+            else:
+                feat = hidden_local.mean(dim=(2, 3)).squeeze(0)
+            feats_out.append(feat)
+
+        D = self.hidden_dim
+        out_feats = torch.zeros(B, D, device=dev)
+        for b in range(B):
+            if feats_out[b] is not None:
+                out_feats[b] = feats_out[b]
+        return out_feats
+
+
+

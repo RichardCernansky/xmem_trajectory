@@ -49,29 +49,65 @@ class MemoryModel(nn.Module):
         self.optimizer = make_optimizer(self)
 
     def forward(self, batch):
-        # inputs come from your dataloader (already using config H/cw etc.)
-        cam_imgs = batch["cam_imgs"].to(self.device, non_blocking=True)             # (B,T,Cams,3,H,cw)
-        cam_K    = batch["cam_K_scaled"].to(self.device, non_blocking=True)
-        cam_T    = batch["cam_T_cam_from_ego"].to(self.device, non_blocking=True)
-        cam_dep  = batch["cam_depths"].to(self.device, non_blocking=True)
-        lidar    = batch["lidar_bev_raw"].to(self.device, non_blocking=True)        # (B,T,4,H_bev,W_bev)
-        init_labels = batch["init_labels"]
-        init0    = batch["bev_target_mask"][:, :1, 0].to(self.device).float()       # (B,1,H_bev,W_bev)
+        dev = self.device
 
-        # RGB → BEV → 3ch frames
-        H_img, W_img = cam_imgs.shape[-2], cam_imgs.shape[-1]
-        F_cam      = self.rgb_bev(cam_imgs, cam_dep, cam_K, cam_T, H_img, W_img)    # (B,T,C_r,H_bev,W_bev)
-        frames_cam = self.cam_to_frames(F_cam)                                      # (B,T,3,H_bev,W_bev)
+        # --- Get all fields from batch (keep on CPU for now) ---
+        cam_imgs = batch["cam_imgs"]            # (B,T,Cams,3,H,W)
+        cam_K    = batch["cam_K_scaled"]
+        cam_T    = batch["cam_T_cam_from_ego"]
+        cam_dep  = batch["cam_depths"]
+        lidar    = batch["lidar_bev_raw"]       # (B,T,4,H_bev,W_bev)
+        init_labels = batch["init_labels"]      # stays on CPU or small list
+        init0    = batch["bev_target_mask"][:, :1, 0].float()   # (B,1,H_bev,W_bev)
 
-        # LiDAR raw → 3ch frames
-        frames_lidar = self.lidar_to_frames(lidar)                                  # (B,T,3,H_bev,W_bev)
+        # --- Static image size ---
+        H_img, W_img = cam_imgs.shape[-2:]
+        B, T = cam_imgs.shape[:2]
 
-        # ReasonNet flow inside XMem
-        seq_feats = self.xmem.forward(frames_cam, frames_lidar, init_masks=init0, init_labels=init_labels)  # (B,T,D)
+        seq_feats = []
+        # --- Process each timestep sequentially ---
+        for t in range(T):
+            # Move only current timestep to GPU
+            cam_imgs_t = cam_imgs[:, t].to(dev, non_blocking=True)
+            cam_K_t    = cam_K[:, t].to(dev, non_blocking=True)
+            cam_T_t    = cam_T[:, t].to(dev, non_blocking=True)
+            cam_dep_t  = cam_dep[:, t].to(dev, non_blocking=True)
+            lidar_t    = lidar[:, t].to(dev, non_blocking=True)
 
-        # head
+           # --- RGB → BEV ---
+            F_cam_t = self.rgb_bev(
+                cam_imgs_t.unsqueeze(1),   # add fake time dimension for encoder
+                cam_dep_t.unsqueeze(1),
+                cam_K_t.unsqueeze(1),
+                cam_T_t.unsqueeze(1),
+                H_img, W_img
+            )                              # (B, 1, C_r, Hb, Wb)
+
+            # convert BEV features → 3-channel frame, then remove T dimension
+            frames_cam_t = self.cam_to_frames(F_cam_t)[:, 0]   # (B, 3, Hb, Wb)
+
+            # --- LiDAR → 3-channel BEV ---
+            frames_lidar_t = self.lidar_to_frames(lidar_t.unsqueeze(1))[:, 0]  # (B, 3, Hb, Wb)
+
+            # --- Feed both modalities into XMem for this timestep ---
+            feats_t = self.xmem.forward_step(t, 
+                frames_cam_t, frames_lidar_t,
+                init_masks=init0.to(dev, non_blocking=True),
+                init_labels=init_labels
+            )
+            seq_feats.append(feats_t)
+
+            # free GPU memory before next frame
+            del cam_imgs_t, cam_K_t, cam_T_t, cam_dep_t, lidar_t, F_cam_t, frames_cam_t, frames_lidar_t
+            torch.cuda.empty_cache()
+
+        # --- Stack timestep features ---
+        seq_feats = torch.stack(seq_feats, dim=1)  # (B,T,D)
+
+        # --- Predict trajectories ---
         traj_res_k, mode_logits = self.head(seq_feats)
         return traj_res_k, mode_logits
+
 
     def to_abs(self, traj_res_k, last_pos):
         return last_pos[:, None, None, :] + traj_res_k

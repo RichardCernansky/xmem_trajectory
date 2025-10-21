@@ -127,7 +127,7 @@ def build_agent_sequence_index(
     class_prefixes: Tuple[str, ...] = ("vehicle.",),
     dataroot: Optional[str] = None,
     visibility: BoxVisibility = BoxVisibility.ANY,
-    throttle_max_rows: Optional[int] = 1000,
+    throttle_max_rows: Optional[int] = None,
     lidar_sensor: str = DEFAULT_LIDAR,
     compute_lidar_transforms: bool = False
 ) -> List[Dict]:
@@ -269,7 +269,7 @@ def build_agent_sequence_index(
                 }
 
                 rows.append(row)
-                if len(rows) >= throttle_max_rows:
+                if throttle_max_rows and len(rows) >= throttle_max_rows:
                     return rows
 
     return rows
