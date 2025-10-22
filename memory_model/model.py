@@ -99,7 +99,7 @@ class MemoryModel(nn.Module):
             seq_feats.append(feats_t)
 
             # free GPU memory before next frame
-            del cam_imgs_t, cam_K_t, cam_T_t, cam_dep_t, lidar_t, F_cam_t, frames_cam_t, frames_lidar_t
+            # del cam_imgs_t, cam_K_t, cam_T_t, cam_dep_t, lidar_t, F_cam_t, frames_cam_t, frames_lidar_t
             # torch.cuda.empty_cache()
 
         # --- Stack timestep features ---

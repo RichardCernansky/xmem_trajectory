@@ -114,8 +114,15 @@ class XMemBackboneWrapper(nn.Module):
         return out
 
     def forward_step(self, t: int, frames_cam_t, frames_lidar_t, *, init_masks, init_labels):
+        print("hello from forward")
+        """
+        LIDAR-only memory:
+        - keys:   LiDAR
+        - values: LiDAR
+        `frames_cam_t` is kept as an input for API compatibility but NOT used.
+        """
         dev = self.device
-        B = frames_cam_t.size(0)
+        B = frames_lidar_t.size(0)
 
         if t == 0:
             self.reset_memory(B)
@@ -131,21 +138,15 @@ class XMemBackboneWrapper(nn.Module):
                 return x
             return F.pad(x, (0, W16 - W, 0, H16 - H))
 
-        frames_cam_t = _pad16_batch(frames_cam_t)
+        # NOTE: frames_cam_t intentionally unused
         frames_lidar_t = _pad16_batch(frames_lidar_t)
 
-        # Camera encoder batched (we only need its features for the decoder)
-        with torch.no_grad():
-            _k_c, _sh_c, _sel_c, f16c, f8c, f4c = self.xmem_core.encode_key(
-                frames_cam_t, need_ek=False, need_sk=False
-            )
-
-        # ⚠️ FIX: LiDAR encode_key per-sample (not batched), to keep shrinkage (S×S) as expected
-        # If you batch this later, you'll need to convert the shortlist to a square shrinkage matrix.
+        # -------- per-sample memory ops (LiDAR-only) --------
         for b in range(B):
             mm = self.mms[b]
             mm.ti = t
 
+            # labels & init mask per sample
             m0 = init_masks[b].to(dev)
             lab0 = init_labels[b]
             if isinstance(lab0, torch.Tensor):
@@ -156,20 +157,23 @@ class XMemBackboneWrapper(nn.Module):
                 lab0 = [int(lab0)]
             mm.all_labels = lab0
 
-            # --- LiDAR EK/SK per-sample → gives k_l (1,C,Hs,Ws), sh_l (1,S,S), sel_l (S,top_k)
+            # LiDAR EK/SK per-sample → keys + shrinkage + shortlist + LiDAR feature pyramid
             with torch.no_grad():
-                k_l, sh_l, sel_l, _f16l, _f8l, _f4l = self.xmem_core.encode_key(
+                k_l, sh_l, sel_l, f16l, f8l, f4l = self.xmem_core.encode_key(
                     frames_lidar_t[b:b+1], need_ek=True, need_sk=True
                 )
-            
 
-            # per-sample camera features for decoder
-            multi_cam_b = (f16c[b:b+1], f8c[b:b+1], f4c[b:b+1])
+            # Ensure selection has a leading batch dim as MemoryManager expects 3D selection
+            if sel_l.dim() == 2:  # (S,K) -> (1,S,K)
+                sel_l = sel_l.unsqueeze(0)
 
+            # LiDAR feature pyramid for segmentation/decoding
+            multi_lidar_b = (f16l, f8l, f4l)
+
+            # --- Seed memory from provided masks for first few frames ---
             if t < 5:
-                # seed memory from provided masks
                 m_pad, _ = pad_divide_by(m0.float(), 16)
-                to_write = aggregate(m_pad, dim=0)  # (1+K,H,W)
+                to_write = aggregate(m_pad, dim=0)  # (1+K_obj, H, W)
                 K_write = int(to_write.shape[0] - 1)
                 if K_write > 0:
                     h_cur = mm.get_hidden()
@@ -177,42 +181,46 @@ class XMemBackboneWrapper(nn.Module):
                         mm.create_hidden_state(K_write, k_l)
                         h_cur = mm.get_hidden()
 
+                    # Encode LiDAR VALUES (not camera)
                     with torch.no_grad():
-                        v_cam, h2 = self.xmem_core.encode_value(
-                            frames_cam_t[b:b+1], f16c[b:b+1], h_cur,
+                        v_lid, h2 = self.xmem_core.encode_value(
+                            frames_lidar_t[b:b+1], f16l, h_cur,
                             to_write[1:].unsqueeze(0),
                             is_deep_update=False
                         )
 
-                    # align value map to key spatial size if needed
-                    bsz, Kc, Cc, Hc, Wc = v_cam.shape
+                    # Align value map to key spatial size if needed
+                    bsz, Kc, Cc, Hc, Wc = v_lid.shape
                     Hs_k, Ws_k = k_l.shape[-2:]
                     if (Hc, Wc) != (Hs_k, Ws_k):
-                        v4 = v_cam.view(bsz, Kc * Cc, Hc, Wc)
+                        v4 = v_lid.view(bsz, Kc * Cc, Hc, Wc)
                         v4 = F.interpolate(v4, size=(Hs_k, Ws_k), mode="bilinear", align_corners=False)
-                        v_cam = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
+                        v_lid = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
 
                     obj_ids = list(range(1, K_write + 1))
-                    mm.add_memory(k_l, sh_l, v_cam, obj_ids, selection=sel_l)  # sh_l is the S×S shrinkage
+                    mm.add_memory(k_l, sh_l, v_lid, obj_ids, selection=sel_l)
                     mm.set_hidden(h2)
 
                 self.have_memory[b] = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
                 feats_out.append(None)
                 continue
 
-            # normal read → segment path
+            # --- Normal: read -> segment -> maybe write ---
             have_real = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
             hidden_local, pred_prob_with_bg = None, None
 
             if have_real:
                 mem_rd = mm.match_memory(
                     k_l, sel_l if self.enable_long_term else None
-                ).unsqueeze(0)  # uses stored shrinkage (S×S) internally
-                hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
-                    multi_cam_b, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
-                )
-                pred_prob_with_bg = pred_prob_with_bg[0]
+                ).unsqueeze(0)  # uses stored shrinkage internally
 
+                # Segment using LiDAR feature pyramid (camera is intentionally unused)
+                hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
+                    multi_lidar_b, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
+                )
+                pred_prob_with_bg = pred_prob_with_bg[0]  # drop batch dim
+
+            # Write cadence
             do_write = (self.mem_every > 0 and t % self.mem_every == 0)
             if do_write:
                 if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
@@ -228,26 +236,28 @@ class XMemBackboneWrapper(nn.Module):
                         mm.create_hidden_state(K_write, k_l)
                         h_cur = mm.get_hidden()
 
+                    # Encode LiDAR VALUES (not camera)
                     with torch.no_grad():
-                        v_cam, h2 = self.xmem_core.encode_value(
-                            frames_cam_t[b:b+1], f16c[b:b+1], h_cur,
+                        v_lid, h2 = self.xmem_core.encode_value(
+                            frames_lidar_t[b:b+1], f16l, h_cur,
                             to_write[1:].unsqueeze(0),
                             is_deep_update=(self.deep_update_every > 0 and t % self.deep_update_every == 0)
                         )
 
-                    bsz, Kc, Cc, Hc, Wc = v_cam.shape
+                    bsz, Kc, Cc, Hc, Wc = v_lid.shape
                     Hs_k, Ws_k = k_l.shape[-2:]
                     if (Hc, Wc) != (Hs_k, Ws_k):
-                        v4 = v_cam.view(bsz, Kc * Cc, Hc, Wc)
+                        v4 = v_lid.view(bsz, Kc * Cc, Hc, Wc)
                         v4 = F.interpolate(v4, size=(Hs_k, Ws_k), mode="bilinear", align_corners=False)
-                        v_cam = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
+                        v_lid = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
 
                     obj_ids = list(range(1, K_write + 1))
-                    mm.add_memory(k_l, sh_l, v_cam, obj_ids, selection=sel_l)  # keep S×S shrinkage
+                    mm.add_memory(k_l, sh_l, v_lid, obj_ids, selection=sel_l)
                     mm.set_hidden(h2)
 
             self.have_memory[b] = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
 
+            # Feature pooling per sample
             if hidden_local is None:
                 feats_out.append(None)
             else:
@@ -257,6 +267,7 @@ class XMemBackboneWrapper(nn.Module):
                     feat = hidden_local.mean(dim=(2, 3)).squeeze(0)
                 feats_out.append(feat)
 
+        # Collate to (B, D)
         D = self.hidden_dim
         out_feats = torch.zeros(B, D, device=dev)
         for b in range(B):

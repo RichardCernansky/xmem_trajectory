@@ -34,6 +34,8 @@ def run_epoch(model, mode, loader, ep: int):
         sum_mr   += m["MR@2m"] * bsz
         total    += bsz
 
+        print("finished batch")
+
 
     return {
         "ADE":  sum_ade  / max(1, total),
