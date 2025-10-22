@@ -19,6 +19,8 @@
   "train_xmem_val_encoder": true,
   "train_xmem_decoder": true,
 
+  "start_up_frames": 5,
+
   "lr_early_fusion": 3e-4,
   "wd_early_fusion":1e-4,
 

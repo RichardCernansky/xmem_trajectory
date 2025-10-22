@@ -70,34 +70,58 @@ def rasterize_convex_poly_bev(self, verts_iyix: np.ndarray) -> np.ndarray:
     m[ymin:ymax+1, xmin:xmax+1] = inside.astype(np.uint8)
     return m
 
-def ann_box_poly_ego_xy(self, ann: dict, lidar_sd: str) -> Optional[np.ndarray]:
-    T_ge = T_global_to_ego_4x4(self.nusc, lidar_sd)
-    box = Box(center=ann["translation"], size=ann["size"], orientation=Quaternion(ann["rotation"]))
-    Cg = box.corners().T.astype(np.float32)
-    Cg = np.hstack([Cg, np.ones((8,1), dtype=np.float32)])
-    Ce = (T_ge @ Cg.T).T[:, :2]
-    Ce_r = np.round(Ce, 3)
-    uniq, idx = np.unique(Ce_r, axis=0, return_index=True)
-    if len(idx) < 3:
+def ann_box_poly_ego_xy(self, ann, lidar_sd: str) -> Optional[np.ndarray]:
+    """Return (4,2) BEV polygon in ego frame, or None if missing/degenerate."""
+    if ann is None:
         return None
-    P = Ce[idx[:4]] if len(idx) >= 4 else Ce[idx]
-    P = order_poly_clockwise(self, P)
+    if isinstance(ann, str):
+        ann = self.nusc.get('sample_annotation', ann)
+        if ann is None:
+            return None
+
+    # Make sure this annotation belongs to the same sample as the lidar frame
+    sd = self.nusc.get('sample_data', lidar_sd)
+    if ann.get('sample_token') != sd['sample_token']:
+        return None
+
+    for k in ('translation', 'size', 'rotation'):
+        if ann.get(k) is None:
+            return None
+
+    try:
+        box = Box(center=ann['translation'], size=ann['size'], orientation=Quaternion(ann['rotation']))
+    except Exception:
+        return None
+
+    # bottom face -> (4,3)
+    Cg = box.bottom_corners().T.astype(np.float32)
+    # global -> ego
+    T_ge = T_global_to_ego_4x4(self.nusc, lidar_sd)
+    Cg_h = np.hstack([Cg, np.ones((4,1), dtype=np.float32)])      # (4,4)
+    Ce = (T_ge @ Cg_h.T).T[:, :2]                                  # (4,2) ego XY
+
+    # Degenerate polygon?
+    if np.linalg.matrix_rank(Ce - Ce.mean(axis=0, keepdims=True)) < 2:
+        return None
+
+    P = order_poly_clockwise(self, Ce)                             # (4,2)
     return P
 
-def bev_mask_from_ann(self, ann: dict, lidar_sd: str) -> Tuple[np.ndarray, Tuple[int,int]]:
+
+def bev_mask_from_ann(self, ann, lidar_sd: str) -> np.ndarray:
+    """Rasterize BEV mask for a single annotation. Returns (H_bev, W_bev) uint8."""
+    H, W = self.H_bev, self.W_bev
+    empty = np.zeros((H, W), dtype=np.uint8)
+
+    if isinstance(ann, str):
+        ann = self.nusc.get('sample_annotation', ann)
+
     P = ann_box_poly_ego_xy(self, ann, lidar_sd)
     if P is None:
-        ctr_g = np.array(ann["translation"], dtype=np.float32)
-        T_ge = T_global_to_ego_4x4(self.nusc, lidar_sd)
-        ctr_e = (T_ge @ np.array([ctr_g[0], ctr_g[1], ctr_g[2], 1.0], dtype=np.float32))[:3]
-        iy, ix = xy_to_bev_px(self, float(ctr_e[0]), float(ctr_e[1]))
-        iy, ix = int(round(iy)), int(round(ix))
-        m = np.zeros((self.H_bev, self.W_bev), dtype=np.uint8)
-        m[iy, ix] = 1
-        return m, (iy, ix)
-    verts_iyix = np.stack([*zip(*[xy_to_bev_px_float(self, x, y) for x, y in P])], axis=-1)
-    verts_iyix = np.array([[iy, ix] for iy, ix in verts_iyix], dtype=np.float32)
-    mask = rasterize_convex_poly_bev(self, verts_iyix)
-    ctr = np.mean(P, axis=0)
-    ciy, cix = xy_to_bev_px_float(self, float(ctr[0]), float(ctr[1]))
-    return mask, (int(round(ciy)), int(round(cix)))
+        return empty  # no center fallback
+
+    verts_iyix = np.array(
+        [xy_to_bev_px_float(self, float(x), float(y)) for x, y in P], dtype=np.float32
+    )
+    mask = rasterize_convex_poly_bev(self, verts_iyix)             # (H_bev, W_bev) uint8
+    return mask

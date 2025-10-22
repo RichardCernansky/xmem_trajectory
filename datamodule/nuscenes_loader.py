@@ -111,7 +111,6 @@ class NuScenesLoader(Dataset):
 
         # LiDAR BEV & target markers
         lidar_bev_raw_list: List[torch.Tensor] = []
-        bev_center_list: List[Tuple[int, int]] = []
         bev_mask_list:   List[torch.Tensor]    = []
 
         # Supervision
@@ -163,8 +162,7 @@ class NuScenesLoader(Dataset):
 
             # -------- target BEV mask from oriented box --------
             ann = _ann_for_instance_at_sample(self.nusc, row["obs_sample_tokens"][t], inst_tok)
-            m_box, (iy, ix) = bev_mask_from_ann(self, ann, lidar_sd)
-            bev_center_list.append((iy, ix))
+            m_box = bev_mask_from_ann(self, ann, lidar_sd)
             bev_mask_list.append(torch.from_numpy(m_box)[None, ...])
 
         # stack per-camera over time -> (T,C,...)
@@ -176,7 +174,6 @@ class NuScenesLoader(Dataset):
 
         lidar_bev_raw = torch.stack(lidar_bev_raw_list, dim=0)            # (T,4,H_bev,W_bev)
         bev_target_mask = torch.stack(bev_mask_list, dim=0).to(torch.uint8)  # (T,1,H_bev,W_bev)
-        bev_target_center_px = torch.tensor(bev_center_list, dtype=torch.long)  # (T,2) (iy, ix)
 
         return {
             # Per-camera inputs for Lift/Splat
@@ -189,8 +186,6 @@ class NuScenesLoader(Dataset):
             # LiDAR BEV raw (fixed grid)
             "lidar_bev_raw":       lidar_bev_raw,        # (T,4,H_bev,W_bev)
 
-            # Target focus in BEV
-            "bev_target_center_px": bev_target_center_px,  # (T,2) (iy,ix)
             "bev_target_mask":      bev_target_mask,       # (T,1,H_bev,W_bev) uint8 (disk)
             "init_labels":   [1],
             # Supervision

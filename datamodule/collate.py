@@ -13,7 +13,6 @@ def collate_varK(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "cam_T_cam_from_ego":  S("cam_T_cam_from_ego"),  # (B,T,C,4,4)
         "lidar_bev_raw":       S("lidar_bev_raw"),       # (B,T,4,Hb,Wb)
         "bev_target_mask":     S("bev_target_mask"),     # (B,T,1,Hb,Wb)
-        "bev_target_center_px":S("bev_target_center_px"),# (B,T,2)
         "traj":                S("traj"),                # (B,T_out,2)
         "last_pos":            S("last_pos"),            # (B,2)
         "init_masks":          S("bev_target_mask"),

@@ -66,6 +66,7 @@ class MemoryModel(nn.Module):
 
         seq_feats = []
         # --- Process each timestep sequentially ---
+        print("hello another forward")
         for t in range(T):
             # Move only current timestep to GPU
             cam_imgs_t = cam_imgs[:, t].to(dev, non_blocking=True)
@@ -99,7 +100,7 @@ class MemoryModel(nn.Module):
 
             # free GPU memory before next frame
             del cam_imgs_t, cam_K_t, cam_T_t, cam_dep_t, lidar_t, F_cam_t, frames_cam_t, frames_lidar_t
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
 
         # --- Stack timestep features ---
         seq_feats = torch.stack(seq_feats, dim=1)  # (B,T,D)

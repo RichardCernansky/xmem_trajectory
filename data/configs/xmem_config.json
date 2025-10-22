@@ -1,5 +1,5 @@
 {
-  "mem_every": 1,                 
+  "mem_every": 3,                 
  "max_mid_term_frames": 8,      
   "min_mid_term_frames": 2,
   "num_prototypes": 64 ,         
