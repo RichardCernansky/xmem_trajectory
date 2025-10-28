@@ -10,7 +10,7 @@ datastore_target_path = "datasets/xcernansky_nuscenes"
 
 # Upload local folder to the blob storage
 datastore.upload(
-    src_dir=r"e:\nuscenes",
+    src_dir="",
     target_path=datastore_target_path,
     overwrite=True,
     show_progress=True
