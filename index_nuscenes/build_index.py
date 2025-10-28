@@ -18,6 +18,8 @@ def main():
     ap.add_argument("--n_total",  type=int,   default=None, help="how many rows to keep in total (train+val)")
     ap.add_argument("--seed",     type=int,   default=42)
     ap.add_argument("--out_prefix", type=str, default="agents_index")
+    ap.add_argument("--train_path", type=str, default="agents_index")
+    ap.add_argument("--val_path", type=str, default="agents_index")
     args = ap.parse_args()
 
     nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=True)
@@ -53,13 +55,13 @@ def main():
     val_rows   = rows[n_train:n_train + n_val]
 
     # Save
-    with open(TRAIN_INDEX, "wb") as f:
+    with open(args.train_path, "wb") as f:
         pickle.dump(train_rows, f)
-    with open(VAL_INDEX, "wb") as f:
+    with open(args.val_path, "wb") as f:
         pickle.dump(val_rows, f)
 
     print(f"Built pool: {len(rows)} rows  ->  train: {len(train_rows)}  |  val: {len(val_rows)}")
-    print(f"Saved to: {TRAIN_INDEX}  /  {VAL_INDEX}")
+    print(f"Saved to: {args.train_path}  /  {args.val_path}")
 
 if __name__ == "__main__":
     main()
