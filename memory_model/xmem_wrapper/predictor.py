@@ -114,7 +114,6 @@ class XMemBackboneWrapper(nn.Module):
         return out
 
     def forward_step(self, t: int, frames_cam_t, frames_lidar_t, *, init_masks, init_labels):
-        print("hello from forward")
         """
         LIDAR-only memory:
         - keys:   LiDAR

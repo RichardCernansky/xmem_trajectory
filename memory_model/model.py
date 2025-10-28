@@ -66,7 +66,6 @@ class MemoryModel(nn.Module):
 
         seq_feats = []
         # --- Process each timestep sequentially ---
-        print("hello another forward")
         for t in range(T):
             # Move only current timestep to GPU
             cam_imgs_t = cam_imgs[:, t].to(dev, non_blocking=True)
