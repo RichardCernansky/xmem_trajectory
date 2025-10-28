@@ -164,3 +164,11 @@ loader camera triplet order alignment deleted
 
 softmax edit xmem
 xmem edit memoery manager line 222 gv unsqueeze
+
+
+clone repo
+clone checkpoint
+requirements 
+get blob
+run program
+

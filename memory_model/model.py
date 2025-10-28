@@ -85,7 +85,7 @@ class MemoryModel(nn.Module):
             )                              # (B, 1, C_r, Hb, Wb)
 
             # convert BEV features → 3-channel frame, then remove T dimension
-            frames_cam_t = self.cam_to_frames(F_cam_t)[:, 0]   # (B, 3, Hb, Wb)
+            frames_cam_t = senorlf.cam_to_frames(F_cam_t)[:, 0]   # (B, 3, Hb, Wb)
 
             # --- LiDAR → 3-channel BEV ---
             frames_lidar_t = self.lidar_to_frames(lidar_t.unsqueeze(1))[:, 0]  # (B, 3, Hb, Wb)
