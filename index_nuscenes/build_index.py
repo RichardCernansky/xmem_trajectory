@@ -1,12 +1,11 @@
 # build_index_5to1.py
 import os, pickle, argparse, random
-from data.configs.filenames import DATAROOT, TRAIN_INDEX, VAL_INDEX
 from nuscenes.nuscenes import NuScenes
 from index_nuscenes.agent_index import build_agent_sequence_index
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataroot", type=str, default=DATAROOT)
+    ap.add_argument("--dataroot", type=str)
     ap.add_argument("--version",  type=str, default="v1.0-trainval")
     ap.add_argument("--cameras",  nargs="+",
                     default=["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"])

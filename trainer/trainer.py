@@ -5,13 +5,30 @@ import matplotlib.pyplot as plt
 
 from memory_model.model import MemoryModel
 from trainer.utils import open_config, open_index
-from data.configs.filenames import TRAIN_CONFIG, TRAIN_INDEX, VAL_INDEX, TRAJ_VIS_OUT_PATH, MODEL_CHECKPOINTS
+from data.configs.filenames import TRAIN_CONFIG, TRAJ_VIS_OUT_PATH
 from visualizer.vis_traj import TrajVisualizer
 from datamodule.datamodule import NuScenesDataModule
 from nuscenes.nuscenes import NuScenes
 
+def parse_args():
+    p = argparse.ArgumentParser()
+    # dataset + indices
+    p.add_argument("--version", default="v1.0-trainval")
+    p.add_argument("--dataroot", required=True, help="NuScenes root directory")
+    p.add_argument("--train_index", required=True, help="Path to train index .pkl")
+    p.add_argument("--val_index",   required=True, help="Path to val index .pkl")
+    # outputs
+    p.add_argument("--checkpoints_dir", required=True, help="Directory to save checkpoints")
+    # run options
+    p.add_argument("--model_name", required=True)
+    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--resume", action="store_true")
+    return p.parse_args()
+
 
 def run_epoch(model, mode, loader, ep: int):
+
+
     train_mode = (mode == "train")
     (model.train if train_mode else model.eval)()
 
@@ -46,26 +63,28 @@ def run_epoch(model, mode, loader, ep: int):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, required=True, help="Name of the model to save/load")
-    args = parser.parse_args()
+    args = parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    nusc = NuScenes(version="v1.0-trainval", dataroot=r"e:\nuscenes", verbose=False)
+    ckpt_dir = args.checkpoints_dir
+    os.makedirs(ckpt_dir, exist_ok=True)              # create if missing
+    ckpt_path = os.path.join(ckpt_dir, f"{args.model_name}.pth")
 
+    # NuScenes
+    nusc = NuScenes(version=args.version, dataroot=str(args.dataroot), verbose=True)
+
+    # Load config & indices
     train_config = open_config(TRAIN_CONFIG)
-    train_rows = open_index(TRAIN_INDEX)
-    val_rows = open_index(VAL_INDEX)
+    train_rows = open_index(args.train_index)
+    val_rows   = open_index(args.val_index)
 
     data_module = NuScenesDataModule(nusc, train_rows, val_rows)
     train_loader = data_module.train_dataloader()
     val_loader = data_module.val_dataloader()
 
     model = MemoryModel(device)
-    ckpt_path = os.path.join(MODEL_CHECKPOINTS, f"{args.model_name}.pth")
-
     start_epoch = 0
-    if os.path.exists(ckpt_path):
+    if args.resume and os.path.exists(ckpt_path):
         print(f"Resuming model from {ckpt_path}")
         checkpoint = torch.load(ckpt_path, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])

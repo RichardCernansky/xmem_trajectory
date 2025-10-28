@@ -172,4 +172,74 @@ requirements
 get blob
 run program
 
+index script:
+echo "== Clone =="
+git clone --recurse-submodules https://github.com/RichardCernansky/xmem_trajectory.git app
+cd app
 
+echo "== Python deps =="
+python -m pip install -U pip
+pip install -U nuscenes-devkit numpy pyquaternion
+
+echo "== Mounts =="
+ROOT="${{inputs.ds_root}}"
+DATA="${ROOT}/nuscenes"
+OUT_DIR="${ROOT}/indexes/run-get-1000"
+echo "ROOT=${ROOT}"
+echo "DATA=${DATA}"
+echo "OUT_DIR=${OUT_DIR}"
+mkdir -p "${OUT_DIR}"
+
+echo "== Peek dataset =="
+ls -al "${DATA}" | head
+find "${DATA}" -maxdepth 2 -type f | head -n 10
+
+echo "== Build index =="
+time python -m index_nuscenes.build_index \
+  --dataroot "${DATA}" \
+  --n_total 1000 2>&1 | tee "${OUT_DIR}/run.log"
+  --train_path "${OUT_DIR}/train_agents_index.pkl" \
+  --val_path   "${OUT_DIR}/val_agents_index.pkl" \
+
+echo "== Output preview =="
+ls -al "${OUT_DIR}" | head
+echo "== DONE =="
+date
+
+
+trainer script:
+echo "== Clone =="
+git clone --recurse-submodules https://github.com/RichardCernansky/xmem_trajectory.git app
+cd app 
+curl -L -o XMem/checkpoints/XMem-s012.pth \
+    https://github.com/hkchengrex/XMem/releases/download/v1.0/XMem-s012.pth
+ls -lh XMem/checkpoints/XMem-s012.pth
+
+echo "== Deps =="
+python -m pip install -U pip
+pip install -U nuscenes-devkit numpy pyquaternion torch torchvision matplotlib
+
+echo "== Paths =="
+ROOT="${{inputs.ds_root}}"
+DATA="${ROOT}/nuscenes"
+TRAIN_IDX="${ROOT}/indexes/run-get-1000/train_agents_index.pkl"
+VAL_IDX="${ROOT}/indexes/run-get-1000/val_agents_index.pkl"
+CKPTS="${ROOT}/checkpoints"
+echo "DATA=$DATA"; echo "TRAIN_IDX=$TRAIN_IDX"; echo "VAL_IDX=$VAL_IDX"; echo "CKPTS=$CKPTS"
+
+echo "== Train =="
+python -m trainer.trainer \
+  --model_name mem_v1 \
+  --version v1.0-trainval \
+  --dataroot "$DATA" \
+  --train_index "$TRAIN_IDX" \
+  --val_index   "$VAL_IDX" \
+  --checkpoints_dir "$CKPTS" \
+  --epochs 20 \
+  --resume
+
+
+python -m trainer.trainer   --model_name mem_v1   --version v1.0-trainval   --dataroot E:/nuscenes  --train_index ./data/indexes/train_agents_index.pkl   --val_index  ./data/indexes/val_agents_index.pkl   --checkpoints_dir ./checkpoints   --epochs 10  --resume
+
+Local build commands
+python -m index_nuscenes.build_index --train_path ./data/indexes/train_agents_index.pkl --val_path ./data/indexes/val_agents_index.pkl --dataroot E:/nuscenes --n_total 1000
