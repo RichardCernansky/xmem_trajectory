@@ -172,7 +172,7 @@ requirements
 get blob
 run program
 
-index script:
+#INDEX script:
 echo "== Clone =="
 git clone --recurse-submodules https://github.com/RichardCernansky/xmem_trajectory.git app
 cd app
@@ -184,7 +184,7 @@ pip install -U nuscenes-devkit numpy pyquaternion
 echo "== Mounts =="
 ROOT="${{inputs.ds_root}}"
 DATA="${ROOT}/nuscenes"
-OUT_DIR="${ROOT}/indexes/run-get-1000"
+OUT_DIR="${ROOT}/indexes/run-get-30000"
 echo "ROOT=${ROOT}"
 echo "DATA=${DATA}"
 echo "OUT_DIR=${OUT_DIR}"
@@ -197,9 +197,10 @@ find "${DATA}" -maxdepth 2 -type f | head -n 10
 echo "== Build index =="
 time python -m index_nuscenes.build_index \
   --dataroot "${DATA}" \
-  --n_total 1000 2>&1 | tee "${OUT_DIR}/run.log"
+  --n_total 30000 \
   --train_path "${OUT_DIR}/train_agents_index.pkl" \
   --val_path   "${OUT_DIR}/val_agents_index.pkl" \
+  2>&1 | tee "${OUT_DIR}/run.log"
 
 echo "== Output preview =="
 ls -al "${OUT_DIR}" | head
@@ -207,17 +208,13 @@ echo "== DONE =="
 date
 
 
-trainer script:
+#TRAINER script:
 echo "== Clone =="
 git clone --recurse-submodules https://github.com/RichardCernansky/xmem_trajectory.git app
 cd app 
 curl -L -o XMem/checkpoints/XMem-s012.pth \
     https://github.com/hkchengrex/XMem/releases/download/v1.0/XMem-s012.pth
 ls -lh XMem/checkpoints/XMem-s012.pth
-
-echo "== Deps =="
-python -m pip install -U pip
-pip install -U nuscenes-devkit numpy pyquaternion torch torchvision matplotlib
 
 echo "== Paths =="
 ROOT="${{inputs.ds_root}}"

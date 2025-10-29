@@ -1,4 +1,4 @@
-# models/model_reasonnet_style.py
+
 import torch, torch.nn as nn
 from trainer.utils import open_config
 from data.configs.filenames import TRAIN_CONFIG
