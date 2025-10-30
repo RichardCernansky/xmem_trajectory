@@ -56,6 +56,14 @@ def run_epoch(model, mode, loader, ep: int):
 
         # start timing the next batch load
         data_t0 = time.perf_counter()
+        
+        bsz = batch["traj"].shape[0]
+        sum_ade  += m["ADE"]   * bsz
+        sum_fde  += m["FDE"]   * bsz
+        sum_made += m["mADE"]  * bsz
+        sum_mfde += m["mFDE"]  * bsz
+        sum_mr   += m["MR@2m"] * bsz
+        total    += bsz
 
 
     return {
