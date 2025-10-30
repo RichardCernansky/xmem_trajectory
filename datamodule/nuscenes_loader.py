@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from pathlib import Path
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 from pyquaternion import Quaternion
@@ -64,6 +65,8 @@ class NuScenesLoader(Dataset):
         self.rows = rows
         self.dtype = dtype
 
+        self.data_root = Path(self.nusc.dataroot).resolve()
+
         self.normalize = True
         # image sizing (per-camera)
         self.H  = int(train_config.get("H", 400))
@@ -92,6 +95,9 @@ class NuScenesLoader(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
+    def resolve_path(self, p: str) -> str:
+            q = Path(p)
+            return str(q if q.is_absolute() else (self.data_root / q).resolve())
 
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -122,7 +128,8 @@ class NuScenesLoader(Dataset):
 
         for t in range(T_in):
             # -------- per-camera RGB (resized), intrinsics, extrinsics, depth --------
-            img_paths = [row["obs_cam_img_grid"][t][cam_idx[i]] for i in range(C)]
+            img_paths_rel = [row["obs_cam_img_grid"][t][cam_idx[i]] for i in range(C)]
+            img_paths = [self.resolve_path(p) for p in img_paths_rel]
             ims = []
             orig_hw = []
             for p in img_paths:

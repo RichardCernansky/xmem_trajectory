@@ -1,5 +1,6 @@
 from typing import List, Dict, Optional, Tuple
 import numpy as np
+from pathlib import Path
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.splits import train as TRAIN_SCENES, val as VAL_SCENES
 from nuscenes.utils.geometry_utils import BoxVisibility
@@ -40,29 +41,35 @@ def _scene_tokens(nusc: NuScenes, scene_name: str) -> List[str]:
         tok = s["next"] if s["next"] else None
     return toks
 
+def _rel_to_root(nusc: NuScenes, p: str) -> str:
+    # normalize -> relative to NuScenes dataroot
+    return str(Path(p).resolve().relative_to(Path(nusc.dataroot).resolve()))
+
 def _cam_sd_and_img(nusc: NuScenes, sample_token: str, cam: str):
     s = nusc.get("sample", sample_token)
     sd_tok = s["data"][cam]
     sd = nusc.get("sample_data", sd_tok)
     calib = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
     K = np.asarray(calib["camera_intrinsic"], dtype=np.float32)
-    img_path = nusc.get_sample_data_path(sd_tok)
-    return sd_tok, img_path.replace("\\", "/"), K
+    abs_img = nusc.get_sample_data_path(sd_tok).replace("\\", "/")
+    rel_img = _rel_to_root(nusc, abs_img)          # <<— store RELATIVE
+    return sd_tok, rel_img, K
 
 def _cams_sd_and_imgs(nusc: NuScenes, sample_token: str, cameras: List[str]):
     out = {}
     ordered_paths = []
     for cam in cameras:
-        sd_tok, img, K = _cam_sd_and_img(nusc, sample_token, cam)
-        out[cam] = {"sd_token": sd_tok, "img_path": img, "K": K}
-        ordered_paths.append(img)
+        sd_tok, rel_img, K = _cam_sd_and_img(nusc, sample_token, cam)
+        out[cam] = {"sd_token": sd_tok, "img_path": rel_img, "K": K}
+        ordered_paths.append(rel_img)              # <<— relative
     return out, ordered_paths
 
 def _lidar_sd_and_path(nusc: NuScenes, sample_token: str, lidar_sensor: str):
     s = nusc.get("sample", sample_token)
     sd_tok = s["data"][lidar_sensor]
-    path = nusc.get_sample_data_path(sd_tok)
-    return sd_tok, path.replace("\\", "/")
+    abs_path = nusc.get_sample_data_path(sd_tok).replace("\\", "/")
+    rel_path = _rel_to_root(nusc, abs_path)       # <<— relative
+    return sd_tok, rel_path
 
 def _ann_by_instance(nusc: NuScenes, sample_token: str) -> Dict[str, dict]:
     s = nusc.get("sample", sample_token)
