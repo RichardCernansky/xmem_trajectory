@@ -239,4 +239,4 @@ python -m trainer.trainer \
 python -m trainer.trainer   --model_name mem_v1   --version v1.0-trainval   --dataroot E:/nuscenes  --train_index ./data/indexes/train_agents_index.pkl   --val_index  ./data/indexes/val_agents_index.pkl   --checkpoints_dir ./checkpoints   --epochs 10  --resume
 
 Local build commands
-python -m index_nuscenes.build_index --train_path ./data/indexes/train_agents_index.pkl --val_path ./data/indexes/val_agents_index.pkl --dataroot E:/nuscenes --n_total 1000
+python -m index_nuscenes.build_index --train_path ./data/indexes/train_agents_index.pkl --val_path ./data/indexes/val_agents_index.pkl --dataroot E:/nuscenes --n_total 500
