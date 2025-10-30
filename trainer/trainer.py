@@ -1,5 +1,5 @@
 import argparse
-import os
+import os, time
 import torch
 import matplotlib.pyplot as plt
 
@@ -25,6 +25,9 @@ def parse_args():
     p.add_argument("--resume", action="store_true")
     return p.parse_args()
 
+def _sync():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 def run_epoch(model, mode, loader, ep: int):
 
@@ -35,21 +38,24 @@ def run_epoch(model, mode, loader, ep: int):
     total = 0
     sum_ade = sum_fde = sum_made = sum_mfde = sum_mr = 0.0
 
+    data_t0 = time.perf_counter()  # start timing the first load
+
     for batch in loader:
+        # time spent loading this batch
+        t_load = time.perf_counter() - data_t0
+
+        # time spent in the model step
+        _sync(); t0 = time.perf_counter()
         if train_mode:
             m, _ = model.training_step(batch, ep)
         else:
             m, pred_abs_k = model.validation_step(batch)
-            viz = TrajVisualizer(save_dir=TRAJ_VIS_OUT_PATH, dpi=150, draw_seams=True)
-            # Optional: viz.plot(pred_abs_k, batch["traj"], save=True)
+        _sync(); t_step = time.perf_counter() - t0
 
-        bsz = batch["traj"].shape[0]
-        sum_ade  += m["ADE"]   * bsz
-        sum_fde  += m["FDE"]   * bsz
-        sum_made += m["mADE"]  * bsz
-        sum_mfde += m["mFDE"]  * bsz
-        sum_mr   += m["MR@2m"] * bsz
-        total    += bsz
+        print(f"load={t_load*1e3:.1f} ms  step={t_step*1e3:.1f} ms")
+
+        # start timing the next batch load
+        data_t0 = time.perf_counter()
 
 
     return {
