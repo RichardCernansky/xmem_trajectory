@@ -36,7 +36,6 @@ def run_epoch(model, mode, loader, ep: int):
     sum_ade = sum_fde = sum_made = sum_mfde = sum_mr = 0.0
 
     for batch in loader:
-        print("entered new batch")
         if train_mode:
             m, _ = model.training_step(batch, ep)
         else:
@@ -52,7 +51,6 @@ def run_epoch(model, mode, loader, ep: int):
         sum_mr   += m["MR@2m"] * bsz
         total    += bsz
 
-        print("Finished batch")
 
     return {
         "ADE":  sum_ade  / max(1, total),
