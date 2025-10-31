@@ -55,7 +55,7 @@ def run_epoch(model, mode, loader, ep: int):
             m, pred_abs_k = model.validation_step(batch)
         _sync(); t_step = time.perf_counter() - t0
 
-        print(f"load={t_load*1e3:.1f} ms  step={t_step*1e3:.1f} ms")
+        # print(f"load={t_load*1e3:.1f} ms  step={t_step*1e3:.1f} ms")
 
         # start timing the next batch load
         data_t0 = time.perf_counter()
