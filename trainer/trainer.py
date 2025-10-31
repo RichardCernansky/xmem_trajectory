@@ -2,7 +2,7 @@ import argparse
 import os, time, sys
 import torch
 import torch.multiprocessing as mp
-mp.set_sharing_strategy("file_system")
+# mp.set_sharing_strategy("file_system")
 
 import matplotlib.pyplot as plt
 
