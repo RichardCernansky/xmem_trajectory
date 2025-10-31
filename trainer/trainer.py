@@ -56,7 +56,7 @@ def run_epoch(model, mode, loader, ep: int):
 
         # start timing the next batch load
         data_t0 = time.perf_counter()
-        
+
         bsz = batch["traj"].shape[0]
         sum_ade  += m["ADE"]   * bsz
         sum_fde  += m["FDE"]   * bsz
@@ -91,7 +91,7 @@ def main():
     train_rows = open_index(args.train_index)
     val_rows   = open_index(args.val_index)
 
-    data_module = NuScenesDataModule(nusc, train_rows, val_rows)
+    data_module = NuScenesDataModule(nusc, train_rows, val_rows, batch_size=train_config["batch_size"])
     train_loader = data_module.train_dataloader()
     val_loader = data_module.val_dataloader()
 

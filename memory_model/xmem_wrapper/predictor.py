@@ -55,8 +55,16 @@ class XMemBackboneWrapper(nn.Module):
             p.requires_grad = False
 
         # unfreeze decoder if wanted
-        if self.train_config["train_xmem_decoder"] == True:
+        if self.train_config.get("train_xmem_decoder"):
             for p in self.xmem_core.decoder.parameters():
+                p.requires_grad = True
+
+        if self.train_config.get("train_xmem_key_encoder"):
+            for p in self.xmem_core.key_encoder.parameters():
+                p.requires_grad = True
+
+        if self.train_config.get("train_xmem_val_encoder"):
+            for p in self.xmem_core.value_encoder.parameters():
                 p.requires_grad = True
 
     def reset_memory(self, B: int):
@@ -157,10 +165,10 @@ class XMemBackboneWrapper(nn.Module):
             mm.all_labels = lab0
 
             # LiDAR EK/SK per-sample → keys + shrinkage + shortlist + LiDAR feature pyramid
-            with torch.no_grad():
-                k_l, sh_l, sel_l, f16l, f8l, f4l = self.xmem_core.encode_key(
-                    frames_lidar_t[b:b+1], need_ek=True, need_sk=True
-                )
+            
+            k_l, sh_l, sel_l, f16l, f8l, f4l = self.xmem_core.encode_key(
+                frames_lidar_t[b:b+1], need_ek=True, need_sk=True
+            )
 
             # Ensure selection has a leading batch dim as MemoryManager expects 3D selection
             if sel_l.dim() == 2:  # (S,K) -> (1,S,K)
@@ -181,12 +189,12 @@ class XMemBackboneWrapper(nn.Module):
                         h_cur = mm.get_hidden()
 
                     # Encode LiDAR VALUES (not camera)
-                    with torch.no_grad():
-                        v_lid, h2 = self.xmem_core.encode_value(
-                            frames_lidar_t[b:b+1], f16l, h_cur,
-                            to_write[1:].unsqueeze(0),
-                            is_deep_update=False
-                        )
+                  
+                    v_lid, h2 = self.xmem_core.encode_value(
+                        frames_lidar_t[b:b+1], f16l, h_cur,
+                        to_write[1:].unsqueeze(0),
+                        is_deep_update=False
+                    )
 
                     # Align value map to key spatial size if needed
                     bsz, Kc, Cc, Hc, Wc = v_lid.shape
@@ -235,13 +243,12 @@ class XMemBackboneWrapper(nn.Module):
                         mm.create_hidden_state(K_write, k_l)
                         h_cur = mm.get_hidden()
 
-                    # Encode LiDAR VALUES (not camera)
-                    with torch.no_grad():
-                        v_lid, h2 = self.xmem_core.encode_value(
-                            frames_lidar_t[b:b+1], f16l, h_cur,
-                            to_write[1:].unsqueeze(0),
-                            is_deep_update=(self.deep_update_every > 0 and t % self.deep_update_every == 0)
-                        )
+                   
+                    v_lid, h2 = self.xmem_core.encode_value(
+                        frames_lidar_t[b:b+1], f16l, h_cur,
+                        to_write[1:].unsqueeze(0),
+                        is_deep_update=(self.deep_update_every > 0 and t % self.deep_update_every == 0)
+                    )
 
                     bsz, Kc, Cc, Hc, Wc = v_lid.shape
                     Hs_k, Ws_k = k_l.shape[-2:]
