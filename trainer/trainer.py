@@ -1,6 +1,9 @@
 import argparse
-import os, time
+import os, time, sys
 import torch
+import torch.multiprocessing as mp
+mp.set_sharing_strategy("file_system")
+
 import matplotlib.pyplot as plt
 
 from memory_model.model import MemoryModel
@@ -76,6 +79,8 @@ def run_epoch(model, mode, loader, ep: int):
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
     args = parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
