@@ -22,7 +22,7 @@
   "start_up_frames": 5,
 
 
-  "lr_head": 1e-3,
+  "lr_head": 1e-2,
   "wd_head": 1e-4,
 
   "lr_decoder": 3e-6,
