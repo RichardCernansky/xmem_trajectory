@@ -6,6 +6,10 @@ class MultiModalTrajectoryHead(nn.Module):
     def __init__(self, d_in: int, t_out: int, K: int, hidden: int = 256, dropout: float = 0.1):
         super().__init__()
         self.t_out, self.K = t_out, K
+
+        # Normalizes per time-step, per sample, across the feature dim (d_in).
+        self.in_norm = nn.LayerNorm(d_in)
+
         self.enc = nn.GRU(input_size=d_in, hidden_size=hidden, batch_first=True, bidirectional=True)
         self.proj = nn.Sequential(
             nn.Linear(2*hidden, hidden),
@@ -15,6 +19,7 @@ class MultiModalTrajectoryHead(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, lengths: torch.Tensor = None):
+        x = self.in_norm(x)
         if lengths is not None:
             x = nn.utils.rnn.pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
             h, _ = self.enc(x)
