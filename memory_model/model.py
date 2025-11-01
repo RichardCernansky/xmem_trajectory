@@ -48,7 +48,28 @@ class MemoryModel(nn.Module):
         # optimizer uses your per-group LRs from config
         self.optimizer = make_optimizer(self)
 
+        # --- Optimizer coverage ---
+        total = 0
+        for i, g in enumerate(self.optimizer.param_groups):
+            n = sum(p.numel() for p in g["params"] if p.requires_grad)
+            print(f"[OPT] group {i}: params={n} lr={g.get('lr')}")
+            total += n
+        print("[OPT] TOTAL trainable params in optimizer:", total)
+
+        print("[OPT] head trainable:",
+            sum(p.numel() for p in self.head.parameters() if p.requires_grad))
+        print("[OPT] xmem.key_enc trainable:",
+            sum(p.numel() for p in self.xmem.xmem_core.key_encoder.parameters()
+                if p.requires_grad))
+        print("[OPT] xmem.val_enc trainable:",
+            sum(p.numel() for p in self.xmem.xmem_core.value_encoder.parameters()
+                if p.requires_grad))
+        print("[OPT] xmem.decoder trainable:",
+            sum(p.numel() for p in self.xmem.xmem_core.decoder.parameters()
+                if p.requires_grad))
         
+        
+
 
     def forward(self, batch):
         dev = self.device
@@ -125,6 +146,20 @@ class MemoryModel(nn.Module):
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
+
+        def mean_grad(m):
+            g = [p.grad.abs().mean().item()
+                for p in m.parameters() if p.grad is not None]
+            return sum(g)/len(g) if g else 0.0
+
+        print("[GRAD] head:", mean_grad(self.head))
+        print("[GRAD] xmem.key_enc:",
+            mean_grad(self.xmem.xmem_core.key_encoder))
+        print("[GRAD] xmem.val_enc:",
+            mean_grad(self.xmem.xmem_core.value_encoder))
+        print("[GRAD] xmem.decoder:",
+            mean_grad(self.xmem.xmem_core.decoder))
+
         self.optimizer.step()
 
         mr = metrics_best_of_k(pred_abs_k, gt_future, r=self.mr_radius)["MR@2m"]
