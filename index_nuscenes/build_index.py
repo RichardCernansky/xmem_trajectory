@@ -50,8 +50,10 @@ def main():
     rows     = rows[:n_total]
     n_train  = (5 * n_total) // 6
     n_val    = n_total - n_train
-    train_rows = rows[:n_train]
-    val_rows   = rows[n_train:n_train + n_val]
+    # train_rows = rows[:n_train]
+    # val_rows   = rows[n_train:n_train + n_val]
+    train_rows = rows[:n_train+1]
+    val_rows = rows[:n_train+1]
 
     # Save
     with open(args.train_path, "wb") as f:

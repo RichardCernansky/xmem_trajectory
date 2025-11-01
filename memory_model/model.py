@@ -127,6 +127,7 @@ class MemoryModel(nn.Module):
         # --- Stack timestep features ---
         seq_feats = torch.stack(seq_feats, dim=1)  # (B,T,D)
 
+        print("[FEAT] mean/std:", float(seq_feats.mean()), float(seq_feats.std()))
         # --- Predict trajectories ---
         traj_res_k, mode_logits = self.head(seq_feats)
         return traj_res_k, mode_logits

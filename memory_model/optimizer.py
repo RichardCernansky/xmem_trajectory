@@ -15,13 +15,6 @@ def make_optimizer(model) -> torch.optim.Optimizer:
         for p in ps:
             added.add(id(p))
 
-    # --- Early Fusion ---
-    if hasattr(model, "early_fusion"):
-        add_group(
-            model.early_fusion.parameters(),
-            get("lr_early_fusion", 5e-4),
-            get("wd_early_fusion", 1e-4),
-        )
 
     # --- Head ---
     add_group(model.head.parameters(), get("lr_head", 1e-3), get("wd_head", 1e-4))
