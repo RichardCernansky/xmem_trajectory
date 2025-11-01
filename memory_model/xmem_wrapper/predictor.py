@@ -273,10 +273,13 @@ class XMemBackboneWrapper(nn.Module):
                     feat = hidden_local.mean(dim=(2, 3)).squeeze(0)
                 feats_out.append(feat)
 
-        # Collate to (B, D)
         D = self.hidden_dim
-        out_feats = torch.zeros(B, D, device=dev)
-        for b in range(B):
-            if feats_out[b] is not None:
-                out_feats[b] = feats_out[b]
+        tmpl = next((f for f in feats_out if f is not None), None)
+        dtype = tmpl.dtype if tmpl is not None else torch.float32
+
+        out_feats = torch.stack(
+            [f if f is not None else torch.zeros(D, device=dev, dtype=dtype)
+            for f in feats_out],
+            dim=0
+        )
         return out_feats
