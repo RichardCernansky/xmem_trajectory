@@ -15,9 +15,9 @@
   "bev_y_bounds": [-30.0, 30.0],
   "trip": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
 
-  "train_xmem_key_encoder": true,
-  "train_xmem_val_encoder": true,
-  "train_xmem_decoder": true,
+  "train_xmem_key_encoder": false,
+  "train_xmem_val_encoder": false,
+  "train_xmem_decoder": false,
 
   "start_up_frames": 5,
 

@@ -48,6 +48,8 @@ class MemoryModel(nn.Module):
         # optimizer uses your per-group LRs from config
         self.optimizer = make_optimizer(self)
 
+        
+
     def forward(self, batch):
         dev = self.device
 
