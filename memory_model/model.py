@@ -158,13 +158,13 @@ class MemoryModel(nn.Module):
                 for p in m.parameters() if p.grad is not None]
             return sum(g)/len(g) if g else 0.0
 
-        print("[GRAD] head:", mean_grad(self.head))
-        print("[GRAD] xmem.key_enc:",
-            mean_grad(self.xmem.xmem_core.key_encoder))
-        print("[GRAD] xmem.val_enc:",
-            mean_grad(self.xmem.xmem_core.value_encoder))
-        print("[GRAD] xmem.decoder:",
-            mean_grad(self.xmem.xmem_core.decoder))
+        # print("[GRAD] head:", mean_grad(self.head))
+        # print("[GRAD] xmem.key_enc:",
+        #     mean_grad(self.xmem.xmem_core.key_encoder))
+        # print("[GRAD] xmem.val_enc:",
+        #     mean_grad(self.xmem.xmem_core.value_encoder))
+        # print("[GRAD] xmem.decoder:",
+        #     mean_grad(self.xmem.xmem_core.decoder))
 
         self.optimizer.step()
 
