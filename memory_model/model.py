@@ -69,8 +69,6 @@ class MemoryModel(nn.Module):
                 if p.requires_grad))
         
         
-
-
     def forward(self, batch):
         dev = self.device
 
@@ -80,8 +78,14 @@ class MemoryModel(nn.Module):
         cam_T    = batch["cam_T_cam_from_ego"]
         cam_dep  = batch["cam_depths"]
         lidar    = batch["lidar_bev_raw"]       # (B,T,4,H_bev,W_bev)
+
+
+        # print(f"LiDAR BEV shape: {lidar.shape}")  # Should be (T, 4, H_bev, W_bev)
+        # print(f"LiDAR BEV value range: Min: {lidar.min()}, Max: {lidar.max()}")
+
+
         init_labels = batch["init_labels"]      # stays on CPU or small list
-        init0    = batch["bev_target_mask"][:, :1, 0].float()   # (B,1,H_bev,W_bev)
+        all_masks = batch["bev_target_mask"].float()  # (B, T, 1, H_bev, W_bev)
 
         # --- Static image size ---
         H_img, W_img = cam_imgs.shape[-2:]
@@ -96,6 +100,7 @@ class MemoryModel(nn.Module):
             cam_T_t    = cam_T[:, t].to(dev, non_blocking=True)
             cam_dep_t  = cam_dep[:, t].to(dev, non_blocking=True)
             lidar_t    = lidar[:, t].to(dev, non_blocking=True)
+            mask_t = all_masks[:, t].to(dev, non_blocking=True)  # (B, 1, H_bev, W_bev)
 
            # --- RGB → BEV ---
             F_cam_t = self.rgb_bev(
@@ -115,7 +120,7 @@ class MemoryModel(nn.Module):
             # --- Feed both modalities into XMem for this timestep ---
             feats_t = self.xmem.forward_step(t, 
                 frames_cam_t, frames_lidar_t,
-                init_masks=init0.to(dev, non_blocking=True),
+                init_masks=mask_t,
                 init_labels=init_labels
             )
             seq_feats.append(feats_t)

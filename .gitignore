@@ -1,4 +1,5 @@
 data/indexes
+data/nuscens_cache.pkl
 checkpoints/*
 XMem/XMem-s012.pth
 

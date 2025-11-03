@@ -153,8 +153,9 @@ class XMemBackboneWrapper(nn.Module):
             mm = self.mms[b]
             mm.ti = t
 
-            # labels & init mask per sample
-            m0 = init_masks[b].to(dev)
+            # Get the CURRENT mask for this sample at this timestep ✅
+            m_current = init_masks[b].to(dev)  # (1, H_bev, W_bev)
+
             lab0 = init_labels[b]
             if isinstance(lab0, torch.Tensor):
                 lab0 = [int(x) for x in lab0.flatten().tolist()]
@@ -179,7 +180,7 @@ class XMemBackboneWrapper(nn.Module):
 
             # --- Seed memory from provided masks for first few frames ---
             if t < 5:
-                m_pad, _ = pad_divide_by(m0.float(), 16)
+                m_pad, _ = pad_divide_by(m_current.float(), 16)
                 to_write = aggregate(m_pad, dim=0)  # (1+K_obj, H, W)
                 K_write = int(to_write.shape[0] - 1)
                 if K_write > 0:
@@ -230,10 +231,13 @@ class XMemBackboneWrapper(nn.Module):
             # Write cadence
             do_write = (self.mem_every > 0 and t % self.mem_every == 0)
             if do_write:
+                # Use predicted mask if available, otherwise use ground truth 
                 if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
-                    to_write = pred_prob_with_bg.detach()
+                    # Don't detach during training to allow gradient flow 
+                    to_write = pred_prob_with_bg if self.training else pred_prob_with_bg.detach()
                 else:
-                    m_pad, _ = pad_divide_by(m0.float(), 16)
+                    # Fallback to ground truth mask for this timestep 
+                    m_pad, _ = pad_divide_by(m_current.float(), 16)  # Use m_current 
                     to_write = aggregate(m_pad, dim=0)
 
                 K_write = int(to_write.shape[0] - 1)

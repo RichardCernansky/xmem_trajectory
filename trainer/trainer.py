@@ -1,8 +1,8 @@
 import argparse
+import pickle
 import os, time, sys
 import torch
 import torch.multiprocessing as mp
-# mp.set_sharing_strategy("file_system")
 
 import matplotlib.pyplot as plt
 
@@ -12,6 +12,26 @@ from data.configs.filenames import TRAIN_CONFIG, TRAJ_VIS_OUT_PATH
 from visualizer.vis_traj import TrajVisualizer
 from datamodule.datamodule import NuScenesDataModule
 from nuscenes.nuscenes import NuScenes
+
+def load_nuscens(args):
+    cache_file = 'data/nuscens_cache.pkl'
+    
+    # Check if the cached instance exists
+    try:
+        with open(cache_file, 'rb') as f:
+            nusc = pickle.load(f)
+            print("Loaded cached NuScenes instance")
+            return nusc
+    except FileNotFoundError:
+        # Cache not found, so we create the instance
+        nusc = NuScenes(version=args.version, dataroot=str(args.dataroot), verbose=True)
+        
+        # Cache the instance
+        with open(cache_file, 'wb') as f:
+            pickle.dump(nusc, f)
+            print("NuScenes instance cached")
+
+        return nusc
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -89,7 +109,7 @@ def main():
     ckpt_path = os.path.join(ckpt_dir, f"{args.model_name}.pth")
 
     # NuScenes
-    nusc = NuScenes(version=args.version, dataroot=str(args.dataroot), verbose=True)
+    nusc = load_nuscens(args)
 
     # Load config & indices
     train_config = open_config(TRAIN_CONFIG)

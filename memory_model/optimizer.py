@@ -20,8 +20,8 @@ def make_optimizer(model) -> torch.optim.Optimizer:
     add_group(model.head.parameters(), get("lr_head", 1e-3), get("wd_head", 1e-4))
 
     # --- XMem parts (only if unfrozen) ---
-    xw = getattr(model, "xmem_backbone_wrapper", None)
-    xcore = getattr(xw, "xmem_core", None)
+    xmem = getattr(model, "xmem", None)
+    xcore = getattr(xmem, "xmem_core", None)
 
     if xcore is not None:
         key_enc = getattr(xcore, "key_encoder", None)
@@ -36,7 +36,7 @@ def make_optimizer(model) -> torch.optim.Optimizer:
             add_group(dec.parameters(), get("lr_decoder", 1e-5), get("wd_decoder", 1e-4))
 
         # any other unfrozen params inside the wrapper (e.g., you unfreeze the last stage)
-        other = [p for _, p in xw.named_parameters() if p.requires_grad and id(p) not in added]
+        other = [p for _, p in xcore.named_parameters() if p.requires_grad and id(p) not in added]
         add_group(other, get("lr_xmem_other", get("lr_decoder", 1e-5)),
                         get("wd_xmem_other", get("wd_decoder", 1e-4)))
 

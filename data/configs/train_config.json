@@ -15,22 +15,22 @@
   "bev_y_bounds": [-30.0, 30.0],
   "trip": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
 
-  "train_xmem_key_encoder": false,
-  "train_xmem_val_encoder": false,
-  "train_xmem_decoder": false,
+  "train_xmem_key_encoder": true,
+  "train_xmem_val_encoder": true,
+  "train_xmem_decoder": true,
 
   "start_up_frames": 5,
 
 
-  "lr_head": 1e-2,
+  "lr_head": 3e-3,
   "wd_head": 1e-4,
 
-  "lr_decoder": 3e-6,
+  "lr_decoder": 2e-5,
   "wd_decoder": 1e-5,
 
-  "lr_key_encoder": 1e-6,
+  "lr_key_encoder": 2e-6,
   "wd_key_encoder": 1e-6,
 
-  "lr_value_encoder": 1e-6,
+  "lr_value_encoder": 2e-6,
   "wd_value_encoder": 1e-6
 }

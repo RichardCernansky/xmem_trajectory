@@ -6,10 +6,7 @@ class MultiModalTrajectoryHead(nn.Module):
     def __init__(self, d_in: int, t_out: int, K: int, hidden: int = 256, dropout: float = 0.1):
         super().__init__()
         self.t_out, self.K = t_out, K
-
-        # Normalizes per time-step, per sample, across the feature dim (d_in).
         self.in_norm = nn.LayerNorm(d_in)
-
         self.enc = nn.GRU(input_size=d_in, hidden_size=hidden, batch_first=True, bidirectional=True)
         self.proj = nn.Sequential(
             nn.Linear(2*hidden, hidden),
@@ -22,13 +19,14 @@ class MultiModalTrajectoryHead(nn.Module):
         x = self.in_norm(x)
         if lengths is not None:
             x = nn.utils.rnn.pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
-            h, _ = self.enc(x)
+            h, (h_n) = self.enc(x)
             h, _ = nn.utils.rnn.pad_packed_sequence(h, batch_first=True)
         else:
-            h, _ = self.enc(x)
+            h, h_n = self.enc(x)
         h = h[:, -1]
+        h = h_n.transpose(0, 1).reshape(x.size(0), -1)  # [B, 2H]
         y = self.proj(h)
         B = y.size(0)
         traj = y[:, : self.K * self.t_out * 2].view(B, self.K, self.t_out, 2)
-        probs = F.softmax(y[:, self.K * self.t_out * 2:], dim=1).view(B, self.K)
-        return traj, probs
+        logits = y[:, self.K * self.t_out * 2:].view(B, self.K)
+        return traj, logits
