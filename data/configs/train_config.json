@@ -11,7 +11,7 @@
   "H_bev": 600,
   "W_bev": 600,
   
-  "bev_x_bounds": [-5.0, 60.0],
+  "bev_x_bounds": [-5.0, 55.0],
   "bev_y_bounds": [-30.0, 30.0],
   "trip": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
 
