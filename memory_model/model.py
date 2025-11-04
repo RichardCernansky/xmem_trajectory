@@ -129,7 +129,7 @@ class MemoryModel(nn.Module):
             write_events,
             lidar_frames_all.detach().cpu(),
             bev_masks_all.detach().cpu(),
-            outdir="data/vis/forward_write_masks",
+            outdir="outputs/vis/forward_write_masks",
             limit=60,
             dpi=140
         )
