@@ -122,21 +122,14 @@ class XMemBackboneWrapper(nn.Module):
         return out
 
     def forward_step(self, t: int, frames_cam_t, frames_lidar_t, *, init_masks, init_labels):
-        """
-        LIDAR-only memory:
-        - keys:   LiDAR
-        - values: LiDAR
-        `frames_cam_t` is kept as an input for API compatibility but NOT used.
-        """
         dev = self.device
         B = frames_lidar_t.size(0)
-
         if t == 0:
             self.reset_memory(B)
 
         feats_out = []
+        writes_step = [None] * B
 
-        # batched /16 pad
         def _pad16_batch(x: torch.Tensor) -> torch.Tensor:
             H, W = x.shape[-2], x.shape[-1]
             H16 = (H + 15) // 16 * 16
@@ -145,16 +138,13 @@ class XMemBackboneWrapper(nn.Module):
                 return x
             return F.pad(x, (0, W16 - W, 0, H16 - H))
 
-        # NOTE: frames_cam_t intentionally unused
         frames_lidar_t = _pad16_batch(frames_lidar_t)
 
-        # -------- per-sample memory ops (LiDAR-only) --------
         for b in range(B):
             mm = self.mms[b]
             mm.ti = t
 
-            # Get the CURRENT mask for this sample at this timestep ✅
-            m_current = init_masks[b].to(dev)  # (1, H_bev, W_bev)
+            m_current = init_masks[b].to(dev)
 
             lab0 = init_labels[b]
             if isinstance(lab0, torch.Tensor):
@@ -165,23 +155,18 @@ class XMemBackboneWrapper(nn.Module):
                 lab0 = [int(lab0)]
             mm.all_labels = lab0
 
-            # LiDAR EK/SK per-sample → keys + shrinkage + shortlist + LiDAR feature pyramid
-            
             k_l, sh_l, sel_l, f16l, f8l, f4l = self.xmem_core.encode_key(
                 frames_lidar_t[b:b+1], need_ek=True, need_sk=True
             )
 
-            # Ensure selection has a leading batch dim as MemoryManager expects 3D selection
-            if sel_l.dim() == 2:  # (S,K) -> (1,S,K)
+            if sel_l.dim() == 2:
                 sel_l = sel_l.unsqueeze(0)
 
-            # LiDAR feature pyramid for segmentation/decoding
             multi_lidar_b = (f16l, f8l, f4l)
 
-            # --- Seed memory from provided masks for first few frames ---
             if t < 5:
                 m_pad, _ = pad_divide_by(m_current.float(), 16)
-                to_write = aggregate(m_pad, dim=0)  # (1+K_obj, H, W)
+                to_write = aggregate(m_pad, dim=0)
                 K_write = int(to_write.shape[0] - 1)
                 if K_write > 0:
                     h_cur = mm.get_hidden()
@@ -189,15 +174,12 @@ class XMemBackboneWrapper(nn.Module):
                         mm.create_hidden_state(K_write, k_l)
                         h_cur = mm.get_hidden()
 
-                    # Encode LiDAR VALUES (not camera)
-                  
                     v_lid, h2 = self.xmem_core.encode_value(
                         frames_lidar_t[b:b+1], f16l, h_cur,
                         to_write[1:].unsqueeze(0),
                         is_deep_update=False
                     )
 
-                    # Align value map to key spatial size if needed
                     bsz, Kc, Cc, Hc, Wc = v_lid.shape
                     Hs_k, Ws_k = k_l.shape[-2:]
                     if (Hc, Wc) != (Hs_k, Ws_k):
@@ -213,32 +195,28 @@ class XMemBackboneWrapper(nn.Module):
                 feats_out.append(None)
                 continue
 
-            # --- Normal: read -> segment -> maybe write ---
             have_real = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
             hidden_local, pred_prob_with_bg = None, None
 
             if have_real:
                 mem_rd = mm.match_memory(
                     k_l, sel_l if self.enable_long_term else None
-                ).unsqueeze(0)  # uses stored shrinkage internally
+                ).unsqueeze(0)
 
-                # Segment using LiDAR feature pyramid (camera is intentionally unused)
                 hidden_local, _, pred_prob_with_bg = self.xmem_core.segment(
                     multi_lidar_b, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
                 )
-                pred_prob_with_bg = pred_prob_with_bg[0]  # drop batch dim
+                pred_prob_with_bg = pred_prob_with_bg[0]
 
-            # Write cadence
             do_write = (self.mem_every > 0 and t % self.mem_every == 0)
             if do_write:
-                # Use predicted mask if available, otherwise use ground truth 
                 if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
-                    # Don't detach during training to allow gradient flow 
-                    to_write = pred_prob_with_bg if self.training else pred_prob_with_bg.detach()
+                    to_write = pred_prob_with_bg.detach()
+                    source = "pred"
                 else:
-                    # Fallback to ground truth mask for this timestep 
-                    m_pad, _ = pad_divide_by(m_current.float(), 16)  # Use m_current 
+                    m_pad, _ = pad_divide_by(m_current.float(), 16)
                     to_write = aggregate(m_pad, dim=0)
+                    source = "gt"
 
                 K_write = int(to_write.shape[0] - 1)
                 if K_write > 0:
@@ -247,7 +225,6 @@ class XMemBackboneWrapper(nn.Module):
                         mm.create_hidden_state(K_write, k_l)
                         h_cur = mm.get_hidden()
 
-                   
                     v_lid, h2 = self.xmem_core.encode_value(
                         frames_lidar_t[b:b+1], f16l, h_cur,
                         to_write[1:].unsqueeze(0),
@@ -265,9 +242,15 @@ class XMemBackboneWrapper(nn.Module):
                     mm.add_memory(k_l, sh_l, v_lid, obj_ids, selection=sel_l)
                     mm.set_hidden(h2)
 
+                    writes_step[b] = {
+                        "t": t,
+                        "b": b,
+                        "source": source,
+                        "to_write": to_write.detach().float().cpu()
+                    }
+
             self.have_memory[b] = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
 
-            # Feature pooling per sample
             if hidden_local is None:
                 feats_out.append(None)
             else:
@@ -286,4 +269,4 @@ class XMemBackboneWrapper(nn.Module):
             for f in feats_out],
             dim=0
         )
-        return out_feats
+        return out_feats, writes_step

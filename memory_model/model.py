@@ -9,6 +9,10 @@ from .head import MultiModalTrajectoryHead
 from .optimizer import make_optimizer
 from .losses import best_of_k_loss
 from .metrics import metrics_best_of_k
+from visualizer.pred_mask_vis import save_write_events
+
+
+
 
 # TODO: SOLVE NORMALIZARION, deal with optimizer, mask=union detachment in predictior , deal with deep update not working
 
@@ -72,70 +76,66 @@ class MemoryModel(nn.Module):
     def forward(self, batch):
         dev = self.device
 
-        # --- Get all fields from batch (keep on CPU for now) ---
-        cam_imgs = batch["cam_imgs"]            # (B,T,Cams,3,H,W)
+        cam_imgs = batch["cam_imgs"]            # (B,T,C,3,H,W)
         cam_K    = batch["cam_K_scaled"]
         cam_T    = batch["cam_T_cam_from_ego"]
         cam_dep  = batch["cam_depths"]
-        lidar    = batch["lidar_bev_raw"]       # (B,T,4,H_bev,W_bev)
+        lidar    = batch["lidar_bev_raw"]       # (B,T,4,Hb,Wb)
+        init_labels = batch["init_labels"]
 
-
-        # print(f"LiDAR BEV shape: {lidar.shape}")  # Should be (T, 4, H_bev, W_bev)
-        # print(f"LiDAR BEV value range: Min: {lidar.min()}, Max: {lidar.max()}")
-
-
-        init_labels = batch["init_labels"]      # stays on CPU or small list
-        all_masks = batch["bev_target_mask"].float()  # (B, T, 1, H_bev, W_bev)
-
-        # --- Static image size ---
         H_img, W_img = cam_imgs.shape[-2:]
         B, T = cam_imgs.shape[:2]
 
         seq_feats = []
-        # --- Process each timestep sequentially ---
+        write_events = []
+
+        # Precompute LiDAR "frames" for visualization once (cheap, 1×1×1 conv)
+        lidar_frames_all = self.lidar_to_frames(lidar.to(dev, non_blocking=True))  # (B,T,3,Hb,Wb)
+        bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True)        # (B,T,1,Hb,Wb)
+
         for t in range(T):
-            # Move only current timestep to GPU
             cam_imgs_t = cam_imgs[:, t].to(dev, non_blocking=True)
             cam_K_t    = cam_K[:, t].to(dev, non_blocking=True)
             cam_T_t    = cam_T[:, t].to(dev, non_blocking=True)
             cam_dep_t  = cam_dep[:, t].to(dev, non_blocking=True)
             lidar_t    = lidar[:, t].to(dev, non_blocking=True)
-            mask_t = all_masks[:, t].to(dev, non_blocking=True)  # (B, 1, H_bev, W_bev)
 
-           # --- RGB → BEV ---
             F_cam_t = self.rgb_bev(
-                cam_imgs_t.unsqueeze(1),   # add fake time dimension for encoder
+                cam_imgs_t.unsqueeze(1),
                 cam_dep_t.unsqueeze(1),
                 cam_K_t.unsqueeze(1),
                 cam_T_t.unsqueeze(1),
                 H_img, W_img
-            )                              # (B, 1, C_r, Hb, Wb)
+            )
+            frames_cam_t   = self.cam_to_frames(F_cam_t)[:, 0]              # (B,3,Hb,Wb)
+            frames_lidar_t = lidar_frames_all[:, t]                         # reuse precomputed (B,3,Hb,Wb)
+            init_t         = bev_masks_all[:, t].float()                    # (B,1,Hb,Wb)
 
-            # convert BEV features → 3-channel frame, then remove T dimension
-            frames_cam_t = self.cam_to_frames(F_cam_t)[:, 0]   # (B, 3, Hb, Wb)
-
-            # --- LiDAR → 3-channel BEV ---
-            frames_lidar_t = self.lidar_to_frames(lidar_t.unsqueeze(1))[:, 0]  # (B, 3, Hb, Wb)
-
-            # --- Feed both modalities into XMem for this timestep ---
-            feats_t = self.xmem.forward_step(t, 
-                frames_cam_t, frames_lidar_t,
-                init_masks=mask_t,
-                init_labels=init_labels
+            feats_t, writes_t = self.xmem.forward_step(
+                t, frames_cam_t, frames_lidar_t,
+                init_masks=init_t, init_labels=init_labels
             )
             seq_feats.append(feats_t)
+            for w in writes_t:
+                if w is not None:
+                    write_events.append(w)
 
-            # free GPU memory before next frame
-            # del cam_imgs_t, cam_K_t, cam_T_t, cam_dep_t, lidar_t, F_cam_t, frames_cam_t, frames_lidar_t
-            # torch.cuda.empty_cache()
-
-        # --- Stack timestep features ---
         seq_feats = torch.stack(seq_feats, dim=1)  # (B,T,D)
-
-        # print("[FEAT] mean/std:", float(seq_feats.mean()), float(seq_feats.std()))
-        # --- Predict trajectories ---
         traj_res_k, mode_logits = self.head(seq_feats)
+
+        # ---- VISUALIZE all writes for this batch (right here) ----
+        # This is unconditional (as you asked), with a cap inside to avoid spam.
+        save_write_events(
+            write_events,
+            lidar_frames_all.detach().cpu(),
+            bev_masks_all.detach().cpu(),
+            outdir="data/vis/forward_write_masks",
+            limit=60,
+            dpi=140
+        )
+
         return traj_res_k, mode_logits
+
 
 
     def to_abs(self, traj_res_k, last_pos):

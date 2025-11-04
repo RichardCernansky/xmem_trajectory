@@ -11,7 +11,7 @@ from pyquaternion import Quaternion
 from trainer.utils import open_config
 from data.configs.filenames import TRAIN_CONFIG
 from .image_utils import load_resize_arr                          # (img_path, cw, H) -> (H,cw,3) + (orig_w,orig_h)
-from .mask_utils import  bev_mask_from_ann
+from .mask_utils import *
 from .lidar_utils import (
     T_cam_from_lidar_4x4,                                         # (nusc, cam_sd_token, lidar_sd_token) -> 4x4
     T_sensor_from_ego_4x4,                                        # (nusc, sd_token) -> sensor<-ego (4x4)
@@ -168,8 +168,13 @@ class NuScenesLoader(Dataset):
                 cam_valids_t[i].append(torch.from_numpy((d > 0.0).astype(np.uint8)))
 
             # -------- target BEV mask from oriented box --------
-            ann = _ann_for_instance_at_sample(self.nusc, row["obs_sample_tokens"][t], inst_tok)
-            m_box = bev_mask_from_ann(self, ann, lidar_sd)
+            lidar_sample_token = self.nusc.get("sample_data", lidar_sd)["sample_token"]
+            ann = _ann_for_instance_at_sample(self.nusc, lidar_sample_token, inst_tok)
+
+            poly_px = ann_to_bev_polygon_pixels(self, ann, lidar_sd)  # (4,2) int32 (x=col, y=row)
+            m_box   = bev_box_mask_from_ann(self, ann, lidar_sd)      # (H_bev, W_bev) uint8
+
+            # store mask
             bev_mask_list.append(torch.from_numpy(m_box)[None, ...])
 
         # stack per-camera over time -> (T,C,...)

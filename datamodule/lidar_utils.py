@@ -112,17 +112,18 @@ def T_sensor_from_ego_4x4(nusc: NuScenes, cam_sd_token: str) -> np.ndarray:
     T_ego_from_cam[:3,  3] = t
     return np.linalg.inv(T_ego_from_cam).astype(np.float32)  # cam←ego
 
-def T_cam_from_lidar_4x4(nusc: NuScenes, cam_sd_token: str, lidar_sd_token: str) -> np.ndarray:
-    # cam_in_ego
-    T_cam_from_ego = T_ego_to_sensor_4x4(nusc, cam_sd_token)
-    # ego_in_cam timestamp’s global -> ego (inverse of ego_in_global at camera time)
-    T_ego_cam_from_global = np.linalg.inv(pose_4x4(nusc, cam_sd_token)).astype(np.float32)
-    # ego_in_global at LiDAR time
-    T_global_from_ego_lidar = pose_4x4(nusc, lidar_sd_token)
-    # lidar_in_ego
-    T_ego_from_lidar = T_sensor_to_ego_4x4(nusc, lidar_sd_token)
-    # Chain: cam←ego * ego←global(cam) * global←ego(lidar) * ego←lidar  == cam←lidar
-    return (T_cam_from_ego @ T_ego_cam_from_global @ T_global_from_ego_lidar @ T_ego_from_lidar).astype(np.float32)
+def T_cam_from_lidar_4x4(nusc, cam_sd_token, lidar_sd_token) -> np.ndarray:
+    # cam←ego_cam
+    T_cam_from_ego = T_sensor_from_ego_4x4(nusc, cam_sd_token)            # ✅ sensor←ego
+    # ego_cam←global(cam-time)
+    T_ego_cam_from_global = np.linalg.inv(pose_4x4(nusc, cam_sd_token))   # ✅
+    # global←ego_lidar(lidar-time)
+    T_global_from_ego_lidar = pose_4x4(nusc, lidar_sd_token)              # ✅
+    # ego_lidar←lidar
+    T_ego_from_lidar = T_sensor_to_ego_4x4(nusc, lidar_sd_token)          # ✅
+    return (T_cam_from_ego @ T_ego_cam_from_global @
+            T_global_from_ego_lidar @ T_ego_from_lidar).astype(np.float32)
+
 
 def scale_K(K: np.ndarray, orig_hw: Tuple[int,int], target_hw: Tuple[int,int]) -> np.ndarray:
     # Unpack sizes: (H,W) original → (H,W) target

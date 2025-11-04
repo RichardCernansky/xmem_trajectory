@@ -8,15 +8,15 @@
   "C_r": 128,
   "H": 400,
   "cw": 320,
-  "H_bev": 150,
-  "W_bev": 150,
+  "H_bev": 600,
+  "W_bev": 600,
   
-  "bev_x_bounds": [-5.0, 55.0],
+  "bev_x_bounds": [-5.0, 60.0],
   "bev_y_bounds": [-30.0, 30.0],
   "trip": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
 
-  "train_xmem_key_encoder": true,
-  "train_xmem_val_encoder": true,
+  "train_xmem_key_encoder": false,
+  "train_xmem_val_encoder": false,
   "train_xmem_decoder": true,
 
   "start_up_frames": 5,
