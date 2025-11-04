@@ -161,12 +161,12 @@ def main():
     plt.plot(hist["epoch"], hist["train_FDE"], marker="o", label="Train FDE")
     plt.plot(hist["epoch"], hist["val_FDE"], marker="o", label="Val FDE")
     plt.xlabel("Epoch"); plt.ylabel("Error"); plt.title("ADE/FDE"); plt.legend(); plt.grid(True)
-    plt.tight_layout(); plt.savefig("data/runs/ade_fde.png")
+    plt.tight_layout(); plt.savefig("outputs/runs/ade_fde.png")
 
     plt.figure(figsize=(8,4))
     plt.plot(hist["epoch"], hist["val_MR2"], marker="o", label="Val MR@2m")
     plt.xlabel("Epoch"); plt.ylabel("Miss rate"); plt.title("Miss Rate @ 2 m")
-    plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("data/runs/missrate.png")
+    plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("outpus/runs/missrate.png")
 
 
 if __name__ == "__main__":
