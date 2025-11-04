@@ -127,6 +127,7 @@ class NuScenesLoader(Dataset):
         inst_tok = row["target"]["agent_id"]
 
         for t in range(T_in):
+            print(T_in)
             # -------- per-camera RGB (resized), intrinsics, extrinsics, depth --------
             img_paths_rel = [row["obs_cam_img_grid"][t][cam_idx[i]] for i in range(C)]
             img_paths = [self.resolve_path(p) for p in img_paths_rel]

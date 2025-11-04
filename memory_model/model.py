@@ -17,10 +17,11 @@ from visualizer.pred_mask_vis import save_write_events
 # TODO: SOLVE NORMALIZARION, deal with optimizer, mask=union detachment in predictior , deal with deep update not working
 
 class MemoryModel(nn.Module):
-    def __init__(self, device: str):
+    def __init__(self, device: str, vis_path):
         super().__init__()
         self.device = device
         self.train_config = open_config(TRAIN_CONFIG)
+        self.vis_path = vis_path
 
         # pull all BEV specs & training knobs from config
         Hb   = int(self.train_config["H_bev"])
@@ -129,7 +130,7 @@ class MemoryModel(nn.Module):
             write_events,
             lidar_frames_all.detach().cpu(),
             bev_masks_all.detach().cpu(),
-            outdir="outputs/vis/forward_write_masks",
+            outdir=self.vis_path,
             limit=60,
             dpi=140
         )

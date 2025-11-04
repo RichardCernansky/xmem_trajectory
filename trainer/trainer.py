@@ -107,6 +107,7 @@ def main():
     ckpt_dir = args.checkpoints_dir
     os.makedirs(ckpt_dir, exist_ok=True)              # create if missing
     ckpt_path = os.path.join(ckpt_dir, f"{args.model_name}.pth")
+    vis_path = ckpt_path
 
     # NuScenes
     nusc = load_nuscens(args)
@@ -120,7 +121,7 @@ def main():
     train_loader = data_module.train_dataloader()
     val_loader = data_module.val_dataloader()
 
-    model = MemoryModel(device)
+    model = MemoryModel(device, vis_path)
     start_epoch = 0
     if args.resume and os.path.exists(ckpt_path):
         print(f"Resuming model from {ckpt_path}")
@@ -161,12 +162,10 @@ def main():
     plt.plot(hist["epoch"], hist["train_FDE"], marker="o", label="Train FDE")
     plt.plot(hist["epoch"], hist["val_FDE"], marker="o", label="Val FDE")
     plt.xlabel("Epoch"); plt.ylabel("Error"); plt.title("ADE/FDE"); plt.legend(); plt.grid(True)
-    plt.tight_layout(); plt.savefig("outputs/runs/ade_fde.png")
 
     plt.figure(figsize=(8,4))
     plt.plot(hist["epoch"], hist["val_MR2"], marker="o", label="Val MR@2m")
     plt.xlabel("Epoch"); plt.ylabel("Miss rate"); plt.title("Miss Rate @ 2 m")
-    plt.legend(); plt.grid(True); plt.tight_layout(); plt.savefig("outpus/runs/missrate.png")
 
 
 if __name__ == "__main__":
