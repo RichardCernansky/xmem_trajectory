@@ -107,7 +107,7 @@ def main():
     ckpt_dir = args.checkpoints_dir
     os.makedirs(ckpt_dir, exist_ok=True)              # create if missing
     ckpt_path = os.path.join(ckpt_dir, f"{args.model_name}.pth")
-    vis_path = ckpt_path
+    vis_path = ckpt_dir
 
     # NuScenes
     nusc = load_nuscens(args)

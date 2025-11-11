@@ -240,3 +240,11 @@ python -m trainer.trainer   --model_name mem_v1   --version v1.0-trainval   --da
 
 Local build commands
 python -m index_nuscenes.build_index --train_path ./data/indexes/train_agents_index.pkl --val_path ./data/indexes/val_agents_index.pkl --dataroot E:/nuscenes --n_total 500
+
+
+
+-stiahnut nuscenes
+- rozdellit xmem wrapper na train adn val
+
+
+-GT vs pred_probs

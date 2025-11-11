@@ -1,5 +1,6 @@
 
 import torch, torch.nn as nn
+import os
 from trainer.utils import open_config
 from data.configs.filenames import TRAIN_CONFIG
 from .adapters.rgb_liftsplat import RGBLiftSplatEncoder
@@ -9,8 +10,7 @@ from .head import MultiModalTrajectoryHead
 from .optimizer import make_optimizer
 from .losses import best_of_k_loss
 from .metrics import metrics_best_of_k
-from visualizer.pred_mask_vis import save_write_events
-
+from visualizer.pred_mask_vis import visualize_steps
 
 
 
@@ -73,6 +73,15 @@ class MemoryModel(nn.Module):
             sum(p.numel() for p in self.xmem.xmem_core.decoder.parameters()
                 if p.requires_grad))
         
+    def _norm_zscore(self, x, eps=1e-6):
+        # x: (B,T,C,H,W)
+        x = torch.nan_to_num(x)  # kill NaNs/Infs just in case
+        mu  = x.mean(dim=(-2, -1), keepdim=True)                         # per (B,T,C)
+        std = x.std(dim=(-2, -1), keepdim=True).clamp_min(eps)
+        x = (x - mu) / std                                              # roughly N(0,1)
+        # optional: squash & shift to [0,1] if your backbone likes images:
+        x = x.tanh() * 0.5 + 0.5
+        return x
         
     def forward(self, batch):
         dev = self.device
@@ -92,6 +101,7 @@ class MemoryModel(nn.Module):
 
         # Precompute LiDAR "frames" for visualization once (cheap, 1×1×1 conv)
         lidar_frames_all = self.lidar_to_frames(lidar.to(dev, non_blocking=True))  # (B,T,3,Hb,Wb)
+        lidar_frames_all = self._norm_zscore(lidar_frames_all)
         bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True)        # (B,T,1,Hb,Wb)
 
         for t in range(T):
@@ -99,7 +109,6 @@ class MemoryModel(nn.Module):
             cam_K_t    = cam_K[:, t].to(dev, non_blocking=True)
             cam_T_t    = cam_T[:, t].to(dev, non_blocking=True)
             cam_dep_t  = cam_dep[:, t].to(dev, non_blocking=True)
-            lidar_t    = lidar[:, t].to(dev, non_blocking=True)
 
             F_cam_t = self.rgb_bev(
                 cam_imgs_t.unsqueeze(1),
@@ -126,13 +135,12 @@ class MemoryModel(nn.Module):
 
         # ---- VISUALIZE all writes for this batch (right here) ----
         # This is unconditional (as you asked), with a cap inside to avoid spam.
-        save_write_events(
-            write_events,
-            lidar_frames_all.detach().cpu(),
-            bev_masks_all.detach().cpu(),
-            outdir=self.vis_path,
-            limit=60,
-            dpi=140
+        visualize_steps(
+            write_events=write_events,
+            lidar_frames_all=lidar_frames_all,   # [B,T,3,H,W]
+            bev_masks_all=bev_masks_all,         # [B,T,1,H,W]
+            outpath=f"{self.vis_path}/window_t5_9.png",
+            b=0, start=5, stop=9, dpi=140
         )
 
         return traj_res_k, mode_logits
