@@ -13,8 +13,7 @@ from .metrics import metrics_best_of_k
 from visualizer.pred_mask_vis import visualize_steps
 
 
-
-# TODO: SOLVE NORMALIZARION, deal with optimizer, mask=union detachment in predictior , deal with deep update not working
+# TODO: SOLVE NORMALIZARION, deal with optimizer, mask=union detachment in predictior
 
 class MemoryModel(nn.Module):
     def __init__(self, device: str, vis_path):

@@ -32,8 +32,6 @@ def pad_to_same16(img_cam, img_lid):
         return F.pad(img, (0, dW, 0, dH))  # pad right/bottom
     return pad(img_cam), pad(img_lid)
 
-# to do  - final feats graph will probably be corrupted bcause of inplace ops
-# detach union?
 class XMemBackboneWrapper(nn.Module):
     def __init__(self, device: str):
         super().__init__()
@@ -244,6 +242,7 @@ class XMemBackboneWrapper(nn.Module):
 
                     bsz, Kc, Cc, Hc, Wc = v_lid.shape
                     Hs_k, Ws_k = k_l.shape[-2:]
+                    
                     if (Hc, Wc) != (Hs_k, Ws_k):
                         v4 = v_lid.view(bsz, Kc * Cc, Hc, Wc)
                         v4 = F.interpolate(v4, size=(Hs_k, Ws_k), mode="bilinear", align_corners=False)
