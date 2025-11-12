@@ -6,7 +6,7 @@ import torch.multiprocessing as mp
 
 import matplotlib.pyplot as plt
 
-from memory_model.model import MemoryModel
+from my_model.model import MemoryModel
 from trainer.utils import open_config, open_index
 from data.configs.filenames import TRAIN_CONFIG, TRAJ_VIS_OUT_PATH
 from visualizer.vis_traj import TrajVisualizer

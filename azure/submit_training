@@ -1,8 +1,0 @@
-#   #!/usr/bin/env bash
-JOB_NAME=$(az ml job create \
-  -g a0047-STUFIIT-ML01 \
-  -w a0047stufiitml01 \
-  -f job.yml \
-  --query name -o tsv)
-
-az ml job stream -n "$JOB_NAME" -g a0047-STUFIIT-ML01 -w a0047stufiitml01
