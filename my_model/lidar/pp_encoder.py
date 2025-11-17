@@ -10,8 +10,8 @@ import torch
 from mmcv.cnn import build_norm_layer
 from torch import nn
 from torch.nn import functional as F
-from mmcv.utils import Registry
-from mmdet3d.ops import Voxelization
+from mmengine import Registry
+from mmcv.ops import Voxelization
 import numpy as np
 
 

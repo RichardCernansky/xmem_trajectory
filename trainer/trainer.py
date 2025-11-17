@@ -36,7 +36,7 @@ def load_nuscens(args):
 def parse_args():
     p = argparse.ArgumentParser()
     # dataset + indices
-    p.add_argument("--version", default="v1.0-trainval")
+    p.add_argument("--version", default="v1.0-mini")
     p.add_argument("--dataroot", required=True, help="NuScenes root directory")
     p.add_argument("--train_index", required=True, help="Path to train index .pkl")
     p.add_argument("--val_index",   required=True, help="Path to val index .pkl")

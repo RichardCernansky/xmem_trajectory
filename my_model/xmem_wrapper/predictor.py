@@ -32,6 +32,8 @@ def pad_to_same16(img_cam, img_lid):
         return F.pad(img, (0, dW, 0, dH))  # pad right/bottom
     return pad(img_cam), pad(img_lid)
 
+# to do  - final feats graph will probably be corrupted bcause of inplace ops
+# detach union?
 class XMemBackboneWrapper(nn.Module):
     def __init__(self, device: str):
         super().__init__()
@@ -118,13 +120,8 @@ class XMemBackboneWrapper(nn.Module):
         if not torch.isfinite(out).all():
             return hid_sel.mean(dim=(2, 3)).squeeze(0)
         return out
-    
-    def _to_write_from_gt(self, m):
-        m_pad, _ = pad_divide_by(m.float(), 16)
-        return aggregate(m_pad, dim=0).detach()
 
-
-    def forward_step(self, t: int, frames_lidar_t, *, init_masks, init_labels):
+    def forward_step(self, t: int,  frames_lidar_t, *, init_masks, init_labels):
         dev = self.device
         B = frames_lidar_t.size(0)
         if t == 0:
@@ -144,9 +141,6 @@ class XMemBackboneWrapper(nn.Module):
         frames_lidar_t = _pad16_batch(frames_lidar_t)
 
         for b in range(B):
-            x = frames_lidar_t[b]
-            # print("[LiDAR frame] min/max/mean:", x.min().item(), x.max().item(), x.mean().item())
-
             mm = self.mms[b]
             mm.ti = t
 
@@ -194,13 +188,7 @@ class XMemBackboneWrapper(nn.Module):
                         v_lid = v4.view(bsz, Kc, Cc, Hs_k, Ws_k)
 
                     obj_ids = list(range(1, K_write + 1))
-
-                    # print(f"[t={t}] GT sum={m_current.sum().item():.1f}")
-                    # print(f"[t={t}] to_write shape={tuple(to_write.shape)} K_write={K_write}")
-                    # print(f"[t={t}] f16 size={tuple(f16l.shape[-2:])}")
-                    # print(f"[t={t}] mem size before={mm.work_mem.size if mm.work_mem.key is not None else 0}")
                     mm.add_memory(k_l, sh_l, v_lid, obj_ids, selection=sel_l)
-                    # print(f"[t={t}] mem size after={mm.work_mem.size}")
                     mm.set_hidden(h2)
 
                 self.have_memory[b] = (mm.work_mem.key is not None) and (mm.work_mem.size > 0)
@@ -219,13 +207,16 @@ class XMemBackboneWrapper(nn.Module):
                     multi_lidar_b, mem_rd, mm.get_hidden(), h_out=True, strip_bg=False
                 )
                 pred_prob_with_bg = pred_prob_with_bg[0]
-                
 
             do_write = (self.mem_every > 0 and t % self.mem_every == 0)
             if do_write:
-                m_pad, _ = pad_divide_by(m_current.float(), 16)
-                to_write = aggregate(m_pad, dim=0)
-                source = "gt"
+                if pred_prob_with_bg is not None and pred_prob_with_bg.shape[0] > 1:
+                    to_write = pred_prob_with_bg.detach()
+                    source = "pred"
+                else:
+                    m_pad, _ = pad_divide_by(m_current.float(), 16)
+                    to_write = aggregate(m_pad, dim=0)
+                    source = "gt"
 
                 K_write = int(to_write.shape[0] - 1)
                 if K_write > 0:
@@ -242,8 +233,6 @@ class XMemBackboneWrapper(nn.Module):
 
                     bsz, Kc, Cc, Hc, Wc = v_lid.shape
                     Hs_k, Ws_k = k_l.shape[-2:]
-                    
-                    
                     if (Hc, Wc) != (Hs_k, Ws_k):
                         v4 = v_lid.view(bsz, Kc * Cc, Hc, Wc)
                         v4 = F.interpolate(v4, size=(Hs_k, Ws_k), mode="bilinear", align_corners=False)
@@ -280,4 +269,4 @@ class XMemBackboneWrapper(nn.Module):
             for f in feats_out],
             dim=0
         )
-        return out_feats, writes_step
+        return out_feats 

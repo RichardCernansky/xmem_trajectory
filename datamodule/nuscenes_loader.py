@@ -47,6 +47,9 @@ class NuScenesLoader(Dataset):
         self.dtype = dtype
         self.data_root = Path(self.nusc.dataroot).resolve()
 
+        #Legacy flag for normalization or not
+        self.normalize = True
+
         # Camera target sizes and ordering
         self.H = int(cfg.get("H", 400))
         self.cw = int(cfg.get("cw", 320))

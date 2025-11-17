@@ -1,7 +1,8 @@
 
 REPO_ROOT = "XMem"
-XMEM_CHECKPOINT = "XMem/XMem-s012.pth"
+XMEM_CHECKPOINT = "checkpoints/xmem/XMem-s012.pth"
 XMEM_CONFIG = "data/configs/xmem_config.json"
 TRAIN_CONFIG  = "data/configs/train_config.json"
 PP_CONFIG = "data/configs/pp_config.json"
+PP_CHECKPOINT = "checkpoints/pp/pp_epoch_059.pth"
 TRAJ_VIS_OUT_PATH = ""

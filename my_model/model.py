@@ -2,7 +2,7 @@
 import torch, torch.nn as nn
 import os
 from trainer.utils import open_config
-from data.configs.filenames import TRAIN_CONFIG, PP_CONFIG
+from data.configs.filenames import TRAIN_CONFIG, PP_CONFIG, PP_CHECKPOINT
 
 from my_model.lidar.pp_loader import build_pointpillars, load_pp_backbone_weights
 from my_model.adapters.pp_to_frames import PPToFrames 
@@ -14,8 +14,6 @@ from .losses import best_of_k_loss
 from .metrics import metrics_best_of_k
 from visualizer.pred_mask_vis import visualize_steps
 
-
-# TODO: SOLVE NORMALIZARION, update optimizer optimizer, mask=union detachment in predictor, decide on strategy of xmem pre-training
 
 class MemoryModel(nn.Module):
     def __init__(self, device: str, vis_path):
@@ -30,7 +28,8 @@ class MemoryModel(nn.Module):
         self.mr_radius = float(self.train_config["mr_radius"])
 
         self.pp = build_pointpillars(self.pp_config, device)
-        _ = load_pp_backbone_weights(self.pp, "pp_epoch_059.pth")
+        _ = load_pp_backbone_weights(self.pp, PP_CHECKPOINT)
+        self.pp.to(device)
         self.pp.eval()
         for p in self.pp.parameters():
             p.requires_grad = False
@@ -71,47 +70,32 @@ class MemoryModel(nn.Module):
                 if p.requires_grad))
         
 
+    # in forward
     def forward(self, batch):
         dev = self.device
 
-        cam_imgs = batch["cam_imgs"]            # (B,T,C,3,H,W)
-        cam_K    = batch["cam_K_scaled"]
-        cam_T    = batch["cam_T_cam_from_ego"]
-        cam_dep  = batch["cam_depths"]
+        bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True)
+        init_labels   = torch.as_tensor(batch["init_labels"]).to(dev, non_blocking=True).long()
+        lidar         = batch["points"].to(dev, non_blocking=True)
 
-        init_labels = batch["init_labels"]
-        lidar    = batch["points"]       # (B,T,4,Hb,Wb)
-        bev_masks_all = batch["bev_target_mask"]    # (B,T,1,Hb,Wb)
-
-        H_img, W_img = cam_imgs.shape[-2:]
         B, T = lidar.shape[:2]
-
-        seq_feats = []
-        write_events = []
-
+        seq_feats, write_events = [], []
 
         for t in range(T):
-            masks         = bev_masks_all[:, t].float().to(dev, non_blocking=True)   # (B,1,Hb,Wb)
-            points_t = lidar[:, t]  # (B, N, 5)
-            bev_feat_t = self.pp(points_t)    # (B, C, Hb, Wb)
-            frames_lidar_t = self.pp_to_frames(bev_feat_t)  # (B, 3, Hb, Wb)
+            masks    = bev_masks_all[:, t].float()
+            points_t = lidar[:, t]
+            bev_feat_t = self.pp(points_t)
+            frames_lidar_t = self.pp_to_frames(bev_feat_t)
 
-            feats_t, writes_t = self.xmem.forward_step(
-                t, frames_lidar_t,
-                init_masks=masks, init_labels=init_labels
+            feats_t= self.xmem.forward_step(
+                t, frames_lidar_t, init_masks=masks, init_labels=init_labels
             )
             seq_feats.append(feats_t)
-            for w in writes_t:
-                if w is not None:
-                    write_events.append(w)
 
-        seq_feats = torch.stack(seq_feats, dim=1)  # (B,T,D)
+        seq_feats = torch.stack(seq_feats, dim=1)
         traj_res_k, mode_logits = self.head(seq_feats)
-
-        # ---- VISUALIZE all writes for this batch (right here) ----
-        # This is unconditional (as you asked), with a cap inside to avoid spam.
-
         return traj_res_k, mode_logits
+
 
 
     def to_abs(self, traj_res_k, last_pos):
