@@ -7,23 +7,22 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 from pyquaternion import Quaternion
 
-# ---- helpers you already have in your project ----
 from trainer.utils import open_config
 from data.configs.filenames import TRAIN_CONFIG
-from .image_utils import load_resize_arr                          # (img_path, cw, H) -> (H,cw,3) + (orig_w,orig_h)
+from .image_utils import load_resize_arr
 from .mask_utils import *
 from .lidar_utils import (
-    T_cam_from_lidar_4x4,                                         # (nusc, cam_sd_token, lidar_sd_token) -> 4x4
-    T_sensor_from_ego_4x4,                                        # (nusc, sd_token) -> sensor<-ego (4x4)
-    transform_points,                                             # (4x4, Nx3) -> Nx3
-    scale_K,                                                      # (K, (orig_h,orig_w), (H,cw)) -> K_scaled
-    rasterize_depth_xyz_cam,                                      # (Xc Nx3, K, (H,cw)) -> (H,cw) depth (m)
-    lidar_points_ego,                                             # (loader, lidar_sd_token) -> (N,4) [x,y,z,intensity] in ego
-    lidar_bev_from_points_fixed                                   # (loader, pts_ego) -> (4, H_bev, W_bev)
+    T_cam_from_lidar_4x4,           # camera<-lidar (4x4)
+    T_sensor_from_ego_4x4,          # sensor<-ego (4x4)
+    transform_points,               # apply 4x4 to Nx3
+    scale_K,                        # scale intrinsics to (H,cw)
+    rasterize_depth_xyz_cam,        # z-buffer rasterization
+    lidar_points_ego,               # (N,4) in ego: [x,y,z,intensity]
 )
+from .pillars_utils import aggregate_sweeps_to_anchor, pillarize_points_xy
 
 def _ann_for_instance_at_sample(nusc: NuScenes, sample_token: str, instance_token: str) -> Optional[dict]:
-    """Return sample_annotation dict for this instance at this sample, else None."""
+    # Find this instance's annotation in the sample (or None if missing)
     s = nusc.get("sample", sample_token)
     for ann_tok in s["anns"]:
         ann = nusc.get("sample_annotation", ann_tok)
@@ -33,179 +32,229 @@ def _ann_for_instance_at_sample(nusc: NuScenes, sample_token: str, instance_toke
 
 class NuScenesLoader(Dataset):
     """
-    Minimal loader for BEV+XMem (no pano). Returns only the tensors the model needs:
-
-      cam_imgs:            (T, C, 3, H, cw)           per-camera RGB (resized)
-      cam_K_scaled:        (T, C, 3, 3)               intrinsics @ (H,cw)
-      cam_T_cam_from_ego:  (T, C, 4, 4)               extrinsics sensor<-ego
-      cam_depths:          (T, C, H, cw)              LiDAR z-buffer depth per cam (m)
-      cam_depth_valid:     (T, C, H, cw) uint8        depth valid mask
-
-      lidar_bev_raw:       (T, 4, H_bev, W_bev)       LiDAR BEV raw stats
-
-      bev_target_center_px:(T, 2) int64               (iy, ix) center pixels in BEV
-      bev_target_mask:     (T, 1, H_bev, W_bev) uint8 simple disk mask around center
-
-      traj:                (T_out, 2)                 future XY (ego frame)
-      last_pos:            (2,)                        last observed XY (ego)
-
-      meta["bev"]: {x/y bounds, H/W, res_x/res_y, mapping}, meta["cams_order"]
+    Returns:
+      - Camera tensors (time-major)
+      - PointPillars tensors per timestep:
+          pillar_features:   (T, P, M, C_feat)
+          pillar_coords:     (T, P, 2)      [iy, ix]
+          pillar_num_points: (T, P)
+      - Meta with grid size for BEV scatter
     """
-    def __init__(
-        self,
-        nusc: NuScenes,
-        rows: List[Dict[str, Any]],
-        dtype: torch.dtype = torch.float32,
-    ):
-        # pull sizes/ROI/camera order from TRAIN_CONFIG
-        train_config = open_config(TRAIN_CONFIG)
+    def __init__(self, nusc: NuScenes, rows: List[Dict[str, Any]], dtype: torch.dtype = torch.float32):
+        cfg = open_config(TRAIN_CONFIG)
 
-        # core refs
+        # Core refs
         self.nusc = nusc
         self.rows = rows
         self.dtype = dtype
-
         self.data_root = Path(self.nusc.dataroot).resolve()
 
-        self.normalize = True
-        # image sizing (per-camera)
-        self.H  = int(train_config.get("H", 400))
-        self.cw = int(train_config.get("cw", 320))
+        # Image sizing
+        self.H  = int(cfg.get("H", 400))
+        self.cw = int(cfg.get("cw", 320))
+        self.trip = cfg.get("trip")                                      # camera order (e.g., front-left, front, front-right)
 
-        # camera triplet order
-        self.trip = train_config.get("trip")
-
-        # BEV metric ROI (meters) — shared by LiDAR and RGB splats
-        bev_x_bounds = train_config.get("bev_x_bounds", [-5.0, 55.0])
-        bev_y_bounds = train_config.get("bev_y_bounds", [-30.0, 30.0])
-
-        # Fixed BEV grid (independent of image size)
-        H_bev = int(train_config.get("H_bev", 150))
-        W_bev = int(train_config.get("W_bev", 150))
-
-        # BEV spec
+        # BEV ROI (meters)
+        bev_x_bounds = cfg.get("bev_x_bounds", [-5.0, 55.0])
+        bev_y_bounds = cfg.get("bev_y_bounds", [-30.0, 30.0])
         self.bev_x_min, self.bev_x_max = map(float, bev_x_bounds)
         self.bev_y_min, self.bev_y_max = map(float, bev_y_bounds)
-        self.H_bev = H_bev
-        self.W_bev = W_bev
-        self.res_x = (self.bev_x_max - self.bev_x_min) / float(self.W_bev)  # m/col
-        self.res_y = (self.bev_y_max - self.bev_y_min) / float(self.H_bev)  # m/row
 
+        # Fixed BEV grid for depth/visualization (kept for compatibility)
+        vx, vy, _ = self.pp_voxel_size
+        self.H_bev = int(np.floor((self.bev_y_max - self.bev_y_min) / vy))
+        self.W_bev = int(np.floor((self.bev_x_max - self.bev_x_min) / vx))
+        self.res_y = vy
+        self.res_x = vx
+
+        # PointPillars discretization config
+        self.pp_voxel_size = tuple(cfg.get("pp_voxel_size", [0.16, 0.16, 6.0]))  # (vx, vy, vz[unused])
+        self.pp_z_bounds   = tuple(cfg.get("pp_z_bounds",  [-3.0, 3.0]))         # (z_min, z_max)
+        self.pp_max_points = int(cfg.get("pp_max_points", 32))                   # M
+        self.pp_max_pillars= int(cfg.get("pp_max_pillars", 12000))               # P cap
+        self.pp_include_dt = bool(cfg.get("pp_include_dt", True))                # add Δt to features
+
+        # Cache for raw LiDAR xyz (for depth projection speed)
+        self._lidar_xyz_cache: Dict[str, np.ndarray] = {}
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def resolve_path(self, p: str) -> str:
-            q = Path(p)
-            return str(q if q.is_absolute() else (self.data_root / q).resolve())
+        # Resolve relative path (stored in index) to absolute
+        q = Path(p)
+        return str(q if q.is_absolute() else (self.data_root / q).resolve())
 
+    def _load_lidar_xyz(self, sd_token: str) -> np.ndarray:
+        # Cache raw LiDAR xyz for repeated projections (depth maps)
+        if sd_token in self._lidar_xyz_cache:
+            return self._lidar_xyz_cache[sd_token]
+        xyz = LidarPointCloud.from_file(self.nusc.get_sample_data_path(sd_token)).points[:3, :].T.astype(np.float32)
+        self._lidar_xyz_cache[sd_token] = xyz
+        return xyz
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         row = self.rows[idx]
         cams_all: List[str] = row["cam_set"]
-        cam_idx = [cams_all.index(c) for c in self.trip]
+        cam_idx = [cams_all.index(c) for c in self.trip]                # indices in your camera triplet
         C = len(self.trip)
+        T_in = len(row["obs_cam_img_grid"])                             # time steps per sample
 
-        T_in = len(row["obs_cam_img_grid"])
-
-        # Per-camera containers (time-major)
+        # Per-camera accumulators
         cam_imgs_t:   List[List[torch.Tensor]] = [[] for _ in range(C)]
         cam_Ks_t:     List[List[np.ndarray]]   = [[] for _ in range(C)]
         cam_Tce_t:    List[List[np.ndarray]]   = [[] for _ in range(C)]
         cam_depths_t: List[List[torch.Tensor]] = [[] for _ in range(C)]
         cam_valids_t: List[List[torch.Tensor]] = [[] for _ in range(C)]
 
-        # LiDAR BEV & target markers
-        lidar_bev_raw_list: List[torch.Tensor] = []
-        bev_mask_list:   List[torch.Tensor]    = []
+        # Pillar accumulators
+        pillar_feats_t:  List[np.ndarray] = []
+        pillar_coords_t: List[np.ndarray] = []
+        pillar_npts_t:   List[np.ndarray] = []
 
         # Supervision
-        # (traj and last_pos are already in ego frame at anchor time per your index)
         traj     = torch.tensor(row["target"]["future_xy"], dtype=self.dtype)
         last_pos = torch.tensor(row["target"]["last_xy"],   dtype=self.dtype)
-
         inst_tok = row["target"]["agent_id"]
+        bev_mask_list: List[torch.Tensor] = []
 
         for t in range(T_in):
-
-            # -------- per-camera RGB (resized), intrinsics, extrinsics, depth --------
+            # ---- Camera images, intrinsics, extrinsics ----
             img_paths_rel = [row["obs_cam_img_grid"][t][cam_idx[i]] for i in range(C)]
             img_paths = [self.resolve_path(p) for p in img_paths_rel]
-            ims = []
-            orig_hw = []
-            for p in img_paths:
-                im, (ow, oh) = load_resize_arr(self, p, self.cw, self.H)      # (H,cw,3) + (orig_w,orig_h)
-                ims.append(im)
-                orig_hw.append((oh, ow))                                      # store (orig_h,orig_w)
 
-            # tokens
-            lidar_sd = row["lidar"]["sd_tokens"][t]
+            ims, orig_hw = [], []
+            for p in img_paths:
+                im, (ow, oh) = load_resize_arr(self, p, self.cw, self.H)        # resize keeping aspect
+                ims.append(im)
+                orig_hw.append((oh, ow))                                        # (orig_h, orig_w)
+
+            # Tokens for LiDAR sweeps at this time step
+            lidar_sweeps: List[str] = row["lidar"]["sd_tokens"][t]              # list of sweep sd_tokens
+            lidar_key: str = row["lidar"].get("keyframe_sd_tokens", [lidar_sweeps[0]])[t]  # anchor
+            dt_list: List[float] = row["lidar"].get("dt_s", [[0.0]*len(lidar_sweeps)])[t]  # Δt per sweep
+
+            # Camera tokens & intrinsics at this time step
             sd_cams = [row["cams"][self.trip[i]]["sd_tokens"][t] for i in range(C)]
             Ks_orig = [np.asarray(row["cams"][self.trip[i]]["intrinsics"], dtype=np.float32) for i in range(C)]
 
-            # LiDAR→ego points & BEV raw
-            pts_ego = lidar_points_ego(self, lidar_sd)                        # (N,4)
-            bev_raw = lidar_bev_from_points_fixed(self, pts_ego)              # (4,H_bev,W_bev)
-            lidar_bev_raw_list.append(torch.from_numpy(bev_raw))
+            # ---- Aggregate sweeps to anchor ego@t and pillarize ----
+            pts_xyzit = aggregate_sweeps_to_anchor(
+                self.nusc,
+                lidar_sweeps,
+                lidar_key,
+                self.pp_include_dt,
+                get_points_ego=lambda sd: lidar_points_ego(self, sd),           # (N,4) in that sweep's ego
+                dt_s=dt_list
+            )
+            vx, vy, _ = self.pp_voxel_size
+            z_min, z_max = self.pp_z_bounds
 
-            # depth needs LiDAR-frame xyz
-            pc = LidarPointCloud.from_file(self.nusc.get_sample_data_path(lidar_sd)).points
-            xyz_lidar = pc[:3, :].T.astype(np.float32)
+            feats_np, coords_np, npts_np = pillarize_points_xy(
+                pts_xyzit,
+                self.bev_x_min, self.bev_x_max,
+                self.bev_y_min, self.bev_y_max,
+                z_min, z_max,
+                vx, vy,
+                self.pp_max_points,
+                self.pp_max_pillars,
+                include_dt=self.pp_include_dt
+            )
+            pillar_feats_t.append(feats_np)                                      # (P, M, C_feat)
+            pillar_coords_t.append(coords_np)                                    # (P, 2) [iy, ix]
+            pillar_npts_t.append(npts_np)                                        # (P,)
 
-            for i in range(C):
-                (oh, ow) = orig_hw[i]
-                K_scaled = scale_K(Ks_orig[i], (oh, ow), (self.H, self.cw))    # (3,3)
-                T_cam_from_ego = T_sensor_from_ego_4x4(self.nusc, sd_cams[i])  # (4,4)
-                T_cam_from_lidar = T_cam_from_lidar_4x4(self.nusc, sd_cams[i], lidar_sd)
+            # ---- Build per-camera depth by projecting union of sweeps ----
+            for i_cam in range(C):
+                (oh, ow) = orig_hw[i_cam]
+                K_scaled = scale_K(Ks_orig[i_cam], (oh, ow), (self.H, self.cw))  # rescaled intrinsics
+                T_cam_from_ego = T_sensor_from_ego_4x4(self.nusc, sd_cams[i_cam])
 
-                # depth via LiDAR→camera projection
-                Xc = transform_points(T_cam_from_lidar, xyz_lidar)             # (N,3)
-                d = rasterize_depth_xyz_cam(Xc, K_scaled, (self.H, self.cw))   # (H,cw), meters; 0=no hit
+                # Project every sweep to this camera at this step
+                Xc_all = []
+                for sdl in lidar_sweeps:
+                    xyz_lidar = self._load_lidar_xyz(sdl)                        # cached (N,3)
+                    T_cl = T_cam_from_lidar_4x4(self.nusc, sd_cams[i_cam], sdl)  # camera<-lidar
+                    Xc_all.append(transform_points(T_cl, xyz_lidar))
+                Xc_cat = np.vstack(Xc_all) if Xc_all else np.zeros((0, 3), dtype=np.float32)
 
-                cam_imgs_t[i].append(torch.from_numpy(ims[i]).permute(2,0,1).to(self.dtype))
-                cam_Ks_t[i].append(K_scaled)
-                cam_Tce_t[i].append(T_cam_from_ego)
-                cam_depths_t[i].append(torch.from_numpy(d).to(self.dtype))
-                cam_valids_t[i].append(torch.from_numpy((d > 0.0).astype(np.uint8)))
+                d = rasterize_depth_xyz_cam(Xc_cat, K_scaled, (self.H, self.cw)) # (H,cw) depth map
 
-            # -------- target BEV mask from oriented box --------
-            lidar_sample_token = self.nusc.get("sample_data", lidar_sd)["sample_token"]
+                cam_imgs_t[i_cam].append(torch.from_numpy(ims[i_cam]).permute(2, 0, 1).to(self.dtype))
+                cam_Ks_t[i_cam].append(K_scaled)
+                cam_Tce_t[i_cam].append(T_cam_from_ego)
+                cam_depths_t[i_cam].append(torch.from_numpy(d).to(self.dtype))
+                cam_valids_t[i_cam].append(torch.from_numpy((d > 0.0).astype(np.uint8)))
+
+            # ---- Target BEV mask (if you use box supervision on BEV) ----
+            lidar_sample_token = self.nusc.get("sample_data", lidar_key)["sample_token"]
             ann = _ann_for_instance_at_sample(self.nusc, lidar_sample_token, inst_tok)
-
-            poly_px = ann_to_bev_polygon_pixels(self, ann, lidar_sd)  # (4,2) int32 (x=col, y=row)
-            m_box   = bev_box_mask_from_ann(self, ann, lidar_sd)      # (H_bev, W_bev) uint8
-
-            # store mask
+            m_box = bev_box_mask_from_ann(self, ann, lidar_key)                  # (H_bev, W_bev) uint8
             bev_mask_list.append(torch.from_numpy(m_box)[None, ...])
 
-        # stack per-camera over time -> (T,C,...)
+        # ---- Stack time-major camera tensors ----
         cam_imgs            = torch.stack([torch.stack(cam_imgs_t[i],   dim=0) for i in range(C)], dim=1)  # (T,C,3,H,cw)
         cam_depths          = torch.stack([torch.stack(cam_depths_t[i], dim=0) for i in range(C)], dim=1)  # (T,C,H,cw)
         cam_depth_valid     = torch.stack([torch.stack(cam_valids_t[i], dim=0) for i in range(C)], dim=1)  # (T,C,H,cw)
-        cam_K_scaled        = torch.from_numpy(np.stack([np.stack(cam_Ks_t[i], axis=0) for i in range(C)], axis=1)).to(self.dtype)   # (T,C,3,3)
-        cam_T_cam_from_ego  = torch.from_numpy(np.stack([np.stack(cam_Tce_t[i], axis=0) for i in range(C)], axis=1)).to(self.dtype)  # (T,C,4,4)
+        cam_K_scaled        = torch.from_numpy(np.stack([np.stack(cam_Ks_t[i], axis=0) for i in range(C)], axis=1)).to(self.dtype)  # (T,C,3,3)
+        cam_T_cam_from_ego  = torch.from_numpy(np.stack([np.stack(cam_Tce_t[i], axis=0) for i in range(C)], axis=1)).to(self.dtype) # (T,C,4,4)
 
-        lidar_bev_raw = torch.stack(lidar_bev_raw_list, dim=0)            # (T,4,H_bev,W_bev)
-        bev_target_mask = torch.stack(bev_mask_list, dim=0).to(torch.uint8)  # (T,1,H_bev,W_bev)
+        # ---- Time-major pillar tensors with per-sequence padding ----
+        T_list = len(pillar_feats_t)
+        maxPill = max((p.shape[0] for p in pillar_feats_t), default=0)
+        feat_dim = pillar_feats_t[0].shape[-1] if maxPill > 0 else (10 if self.pp_include_dt else 9)
+        maxPts = self.pp_max_points
+
+        pillar_features = torch.zeros((T_list, maxPill, maxPts, feat_dim), dtype=self.dtype)
+        pillar_coords   = torch.zeros((T_list, maxPill, 2), dtype=torch.int32)
+        pillar_npoints  = torch.zeros((T_list, maxPill), dtype=torch.int32)
+
+        for t in range(T_list):
+            P_t = pillar_feats_t[t].shape[0]
+            if P_t == 0:
+                continue
+            pillar_features[t, :P_t] = torch.from_numpy(pillar_feats_t[t]).to(self.dtype)
+            pillar_coords[t,   :P_t] = torch.from_numpy(pillar_coords_t[t]).to(torch.int32)
+            pillar_npoints[t,  :P_t] = torch.from_numpy(pillar_npts_t[t]).to(torch.int32)
+
+        bev_target_mask = torch.stack(bev_mask_list, dim=0).to(torch.uint8)      # (T,1,H_bev,W_bev)
+
+        # Grid size (H, W) for BEV scatter derived from PP voxel size
+        grid_W = int(np.floor((self.bev_x_max - self.bev_x_min) / self.pp_voxel_size[0]))
+        grid_H = int(np.floor((self.bev_y_max - self.bev_y_min) / self.pp_voxel_size[1]))
 
         return {
-            # Per-camera inputs for Lift/Splat
-            "cam_imgs":            cam_imgs,             # (T,C,3,H,cw)
-            "cam_K_scaled":        cam_K_scaled,         # (T,C,3,3)
-            "cam_T_cam_from_ego":  cam_T_cam_from_ego,   # (T,C,4,4)
-            "cam_depths":          cam_depths,           # (T,C,H,cw)
-            "cam_depth_valid":     cam_depth_valid,      # (T,C,H,cw) uint8
+            # Cameras
+            "cam_imgs":            cam_imgs,
+            "cam_K_scaled":        cam_K_scaled,
+            "cam_T_cam_from_ego":  cam_T_cam_from_ego,
+            "cam_depths":          cam_depths,
+            "cam_depth_valid":     cam_depth_valid,
 
-            # LiDAR BEV raw (fixed grid)
-            "lidar_bev_raw":       lidar_bev_raw,        # (T,4,H_bev,W_bev)
+            # PointPillars inputs (time-major)
+            "pillar_features":     pillar_features,      # (T, P, M, C_feat) -> P≤min(H×W, max_pillars)
+            "pillar_coords":       pillar_coords,        # (T, P, 2) [iy, ix]
+            "pillar_num_points":   pillar_npoints,       # (T, P)
 
-            "bev_target_mask":      bev_target_mask,       # (T,1,H_bev,W_bev) uint8 (disk)
-            "init_labels":   [1],
+            # PP meta for scatter & bounds
+            "pillar_meta": {
+                "x_min": self.bev_x_min, "x_max": self.bev_x_max,
+                "y_min": self.bev_y_min, "y_max": self.bev_y_max,
+                "z_min": self.pp_z_bounds[0], "z_max": self.pp_z_bounds[1],
+                "voxel_size": self.pp_voxel_size,        # (vx, vy, vz[unused])
+                "max_points_per_pillar": self.pp_max_points,
+                "max_pillars": self.pp_max_pillars,
+                "include_dt": self.pp_include_dt,
+                "grid_size_xy": (grid_H, grid_W)         # (H, W) for BEV tensor
+            },
+
             # Supervision
-            "traj":          traj,  # (T_out,2)
-            "last_pos":      last_pos,  # (2,)
+            "bev_target_mask":     bev_target_mask,      # (T,1,H_bev,W_bev)
+            "init_labels":         [1],                  # static single label for single target
+            "traj":                traj,                 # (T_out,2)
+            "last_pos":            last_pos,             # (2,)
 
-            # Meta needed for consistent BEV mapping
+            # Misc meta
             "meta": {
                 "cams_order": self.trip,
                 "bev": {
@@ -213,7 +262,6 @@ class NuScenesLoader(Dataset):
                     "y_min": self.bev_y_min, "y_max": self.bev_y_max,
                     "H": self.H_bev, "W": self.W_bev,
                     "res_x": self.res_x, "res_y": self.res_y,
-                    "mapping": "y_min→top rows, y_max→bottom rows; x_min→left cols, x_max→right cols",
                     "ref_frame": "ego@t"
                 },
             },

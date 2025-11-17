@@ -124,7 +124,7 @@ class XMemBackboneWrapper(nn.Module):
         return aggregate(m_pad, dim=0).detach()
 
 
-    def forward_step(self, t: int, frames_cam_t, frames_lidar_t, *, init_masks, init_labels):
+    def forward_step(self, t: int, frames_lidar_t, *, init_masks, init_labels):
         dev = self.device
         B = frames_lidar_t.size(0)
         if t == 0:

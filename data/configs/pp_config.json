@@ -1,0 +1,31 @@
+{
+  "pts_voxel_encoder": {
+    "type": "PillarFeatureNet",
+    "in_channels": 5,
+    "feat_channels": [64],
+    "with_distance": false,
+    "voxel_size": [0.2, 0.2, 4.0],
+    "point_cloud_range": [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+  },
+  "pts_middle_encoder": {
+    "type": "PointPillarsScatter",
+    "in_channels": 64,
+    "output_shape": [512, 512]
+  },
+  "pts_backbone": {
+    "type": "PPBackbone",
+    "in_channels": 64,
+    "out_channels": [64, 128, 256],
+    "layer_nums": [2, 4, 4],
+    "layer_strides": [2, 2, 2]
+  },
+  "pts_neck": {
+    "type": "PPNeck",
+    "in_channels": [64, 128, 256],
+    "upsample_strides": [1, 2, 4],
+    "out_channels": [64, 96, 96]
+  },
+  "pp_head": null,
+  "max_num_points": 10,
+  "max_voxels": [90000, 120000]
+}

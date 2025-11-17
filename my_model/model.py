@@ -2,9 +2,11 @@
 import torch, torch.nn as nn
 import os
 from trainer.utils import open_config
-from data.configs.filenames import TRAIN_CONFIG
-from .adapters.rgb_liftsplat import RGBLiftSplatEncoder
-from .adapters.bev_into_frames import CamBEVToFrames, LiDARToFrames
+from data.configs.filenames import TRAIN_CONFIG, PP_CONFIG
+
+from my_model.lidar.pp_loader import build_pointpillars, load_pp_backbone_weights
+from my_model.adapters.pp_to_frames import PPToFrames 
+
 from .xmem_wrapper.predictor import XMemBackboneWrapper
 from .head import MultiModalTrajectoryHead
 from .optimizer import make_optimizer
@@ -13,31 +15,27 @@ from .metrics import metrics_best_of_k
 from visualizer.pred_mask_vis import visualize_steps
 
 
-# TODO: SOLVE NORMALIZARION, deal with optimizer, mask=union detachment in predictior
+# TODO: SOLVE NORMALIZARION, update optimizer optimizer, mask=union detachment in predictor, decide on strategy of xmem pre-training
 
 class MemoryModel(nn.Module):
     def __init__(self, device: str, vis_path):
         super().__init__()
         self.device = device
         self.train_config = open_config(TRAIN_CONFIG)
+        self.pp_config = open_config(PP_CONFIG)
         self.vis_path = vis_path
-
-        # pull all BEV specs & training knobs from config
-        Hb   = int(self.train_config["H_bev"])
-        Wb   = int(self.train_config["W_bev"])
-        xmn, xmx = [float(x) for x in self.train_config["bev_x_bounds"]]
-        ymn, ymx = [float(y) for y in self.train_config["bev_y_bounds"]]
 
         self.K         = int(self.train_config["K"])
         self.horizon   = int(self.train_config["horizon"])
         self.mr_radius = float(self.train_config["mr_radius"])
 
-        # camera branch (RGB → BEV) sized by config
-        C_r = self.train_config["C_r"]
-        self.rgb_bev         = RGBLiftSplatEncoder(Hb, Wb, xmn, xmx, ymn, ymx, C_r=C_r).to(device)
-        self.cam_to_frames   = CamBEVToFrames(c_in=C_r).to(device)
+        self.pp = build_pointpillars(self.pp_config, device)
+        _ = load_pp_backbone_weights(self.pp, "pp_epoch_059.pth")
+        self.pp.eval()
+        for p in self.pp.parameters():
+            p.requires_grad = False
 
-        self.lidar_to_frames = LiDARToFrames(Hb, Wb, with_posenc=True).to(device)
+        self.pp_to_frames = PPToFrames(c_in= self.pp.pts_neck.out_channels if self.pp.pts_neck else 256).to(device)
 
         # XMem (uses its own flags from your wrapper; frozen or trainable via config)
         self.xmem = XMemBackboneWrapper(device)
@@ -72,16 +70,7 @@ class MemoryModel(nn.Module):
             sum(p.numel() for p in self.xmem.xmem_core.decoder.parameters()
                 if p.requires_grad))
         
-    def _norm_zscore(self, x, eps=1e-6):
-        # x: (B,T,C,H,W)
-        x = torch.nan_to_num(x)  # kill NaNs/Infs just in case
-        mu  = x.mean(dim=(-2, -1), keepdim=True)                         # per (B,T,C)
-        std = x.std(dim=(-2, -1), keepdim=True).clamp_min(eps)
-        x = (x - mu) / std                                              # roughly N(0,1)
-        # optional: squash & shift to [0,1] if your backbone likes images:
-        x = x.tanh() * 0.5 + 0.5
-        return x
-        
+
     def forward(self, batch):
         dev = self.device
 
@@ -89,40 +78,27 @@ class MemoryModel(nn.Module):
         cam_K    = batch["cam_K_scaled"]
         cam_T    = batch["cam_T_cam_from_ego"]
         cam_dep  = batch["cam_depths"]
-        lidar    = batch["lidar_bev_raw"]       # (B,T,4,Hb,Wb)
+
         init_labels = batch["init_labels"]
+        lidar    = batch["points"]       # (B,T,4,Hb,Wb)
+        bev_masks_all = batch["bev_target_mask"]    # (B,T,1,Hb,Wb)
 
         H_img, W_img = cam_imgs.shape[-2:]
-        B, T = cam_imgs.shape[:2]
+        B, T = lidar.shape[:2]
 
         seq_feats = []
         write_events = []
 
-        # Precompute LiDAR "frames" for visualization once (cheap, 1×1×1 conv)
-        lidar_frames_all = self.lidar_to_frames(lidar.to(dev, non_blocking=True))  # (B,T,3,Hb,Wb)
-        lidar_frames_all = self._norm_zscore(lidar_frames_all)
-        bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True)        # (B,T,1,Hb,Wb)
 
         for t in range(T):
-            cam_imgs_t = cam_imgs[:, t].to(dev, non_blocking=True)
-            cam_K_t    = cam_K[:, t].to(dev, non_blocking=True)
-            cam_T_t    = cam_T[:, t].to(dev, non_blocking=True)
-            cam_dep_t  = cam_dep[:, t].to(dev, non_blocking=True)
-
-            F_cam_t = self.rgb_bev(
-                cam_imgs_t.unsqueeze(1),
-                cam_dep_t.unsqueeze(1),
-                cam_K_t.unsqueeze(1),
-                cam_T_t.unsqueeze(1),
-                H_img, W_img
-            )
-            frames_cam_t   = self.cam_to_frames(F_cam_t)[:, 0]              # (B,3,Hb,Wb)
-            frames_lidar_t = lidar_frames_all[:, t]                         # reuse precomputed (B,3,Hb,Wb)
-            init_t         = bev_masks_all[:, t].float()                    # (B,1,Hb,Wb)
+            masks         = bev_masks_all[:, t].float().to(dev, non_blocking=True)   # (B,1,Hb,Wb)
+            points_t = lidar[:, t]  # (B, N, 5)
+            bev_feat_t = self.pp(points_t)    # (B, C, Hb, Wb)
+            frames_lidar_t = self.pp_to_frames(bev_feat_t)  # (B, 3, Hb, Wb)
 
             feats_t, writes_t = self.xmem.forward_step(
-                t, frames_cam_t, frames_lidar_t,
-                init_masks=init_t, init_labels=init_labels
+                t, frames_lidar_t,
+                init_masks=masks, init_labels=init_labels
             )
             seq_feats.append(feats_t)
             for w in writes_t:
@@ -134,23 +110,15 @@ class MemoryModel(nn.Module):
 
         # ---- VISUALIZE all writes for this batch (right here) ----
         # This is unconditional (as you asked), with a cap inside to avoid spam.
-        visualize_steps(
-            write_events=write_events,
-            lidar_frames_all=lidar_frames_all,   # [B,T,3,H,W]
-            bev_masks_all=bev_masks_all,         # [B,T,1,H,W]
-            outpath=f"{self.vis_path}/window_t5_9.png",
-            b=0, start=5, stop=9, dpi=140
-        )
 
         return traj_res_k, mode_logits
-
 
 
     def to_abs(self, traj_res_k, last_pos):
         return last_pos[:, None, None, :] + traj_res_k
 
     def training_step(self, batch, epoch: int):
-        self.train()
+        self.train() # call train() on all nn.Module submodules
         gt_future = batch["traj"].to(self.device, non_blocking=True)
         last_pos  = batch["last_pos"].to(self.device, non_blocking=True)
 
@@ -180,7 +148,7 @@ class MemoryModel(nn.Module):
         return {"ADE": ade.item(), "FDE": fde.item(), "mADE": ade.item(), "mFDE": fde.item(), "MR@2m": mr, "loss": loss.item()}, pred_abs_k.detach()
 
     def validation_step(self, batch):
-        self.eval()
+        self.eval() # call train() on all nn.Module submodules
         with torch.inference_mode():
             gt_future = batch["traj"].to(self.device, non_blocking=True)
             last_pos  = batch["last_pos"].to(self.device, non_blocking=True)
