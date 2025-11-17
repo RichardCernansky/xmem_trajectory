@@ -212,7 +212,7 @@ date
 echo "== Clone =="
 git clone --recurse-submodules https://github.com/RichardCernansky/xmem_trajectory.git app
 cd app 
-curl -L -o XMem/checkpoints/XMem-s012.pth \
+curl -L -o checkpoints/xmem/XMem-s012.pth \
     https://github.com/hkchengrex/XMem/releases/download/v1.0/XMem-s012.pth
 ls -lh XMem/checkpoints/XMem-s012.pth
 

@@ -1,198 +1,30 @@
-absl-py==2.3.1
-adal==1.2.7
-anyio==4.11.0
-argcomplete==3.6.3
-argon2-cffi==25.1.0
-argon2-cffi-bindings==25.1.0
-arrow==1.4.0
-asttokens @ file:///home/conda/feedstock_root/build_artifacts/asttokens_1733250440834/work
-async-lru==2.0.5
-attrs==25.4.0
-azure-common==1.1.28
-azure-core==1.36.0
-azure-graphrbac==0.61.2
-azure-mgmt-authorization==4.0.0
-azure-mgmt-containerregistry==13.0.0
-azure-mgmt-core==1.6.0
-azure-mgmt-keyvault==11.0.0
-azure-mgmt-network==29.0.0
-azure-mgmt-resource==24.0.0
-azure-mgmt-storage==23.0.0
-azureml-core==1.60.0.post1
-babel==2.17.0
-backports.tempfile==1.0
-backports.weakref==1.0.post1
-bcrypt==5.0.0
-beautifulsoup4==4.13.5
-bleach==6.2.0
-cachetools==6.2.0
-certifi==2025.8.3
-cffi==2.0.0
-charset-normalizer==3.4.3
-colorama @ file:///home/conda/feedstock_root/build_artifacts/colorama_1733218098505/work
-comm @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_comm_1753453984/work
-contextlib2==21.6.0
-contourpy==1.3.2
-cryptography==46.0.3
-cycler==0.12.1
-debugpy @ file:///D:/bld/bld/rattler-build_debugpy_1758162070/work
-decorator @ file:///home/conda/feedstock_root/build_artifacts/decorator_1740384970518/work
-defusedxml==0.7.1
-descartes==1.1.0
-docker==7.1.0
-exceptiongroup @ file:///home/conda/feedstock_root/build_artifacts/exceptiongroup_1746947292760/work
-executing @ file:///home/conda/feedstock_root/build_artifacts/executing_1756729339227/work
-fastjsonschema==2.21.2
-filelock==3.13.1
-fire==0.7.1
-fonttools==4.59.2
-fqdn==1.5.1
-fsspec==2024.6.1
-gdown==5.2.0
-git-filter-repo==2.47.0
-gitdb==4.0.12
-GitPython==3.1.46
-graphviz==0.21
-grpcio==1.74.0
-h11==0.16.0
-h5py==3.14.0
-hickle==5.0.3
-httpcore==1.0.9
-httpx==0.28.1
-humanfriendly==10.0
-idna==3.10
-importlib_metadata @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_importlib-metadata_1747934053/work
-ipykernel @ file:///D:/bld/bld/rattler-build_ipykernel_1760459863/work
-ipython @ file:///D:/bld/bld/rattler-build_ipython_1748711254/work
-ipywidgets==8.1.7
-isodate==0.7.2
-isoduration==20.11.0
-jedi @ file:///home/conda/feedstock_root/build_artifacts/jedi_1733300866624/work
-jeepney==0.9.0
-Jinja2==3.1.4
-jmespath==1.0.1
-joblib==1.5.2
-json5==0.12.1
-jsonpickle==4.1.1
-jsonpointer==3.0.0
-jsonschema==4.25.1
-jsonschema-specifications==2025.9.1
-jupyter==1.1.1
-jupyter-console==6.6.3
-jupyter-events==0.12.0
-jupyter-lsp==2.3.0
-jupyter_client @ file:///home/conda/feedstock_root/build_artifacts/jupyter_client_1733440914442/work
-jupyter_core @ file:///D:/bld/bld/rattler-build_jupyter_core_1760643889/work
-jupyter_server==2.17.0
-jupyter_server_terminals==0.5.3
-jupyterlab==4.4.10
-jupyterlab_pygments==0.3.0
-jupyterlab_server==2.28.0
-jupyterlab_widgets==3.0.15
-kiwisolver==1.4.9
-knack==0.12.0
-lark==1.3.0
-Markdown==3.8.2
-MarkupSafe==2.1.5
-matplotlib==3.10.6
-matplotlib-inline @ file:///home/conda/feedstock_root/build_artifacts/matplotlib-inline_1761214490209/work
-mistune==3.1.4
-mpmath==1.3.0
-msal==1.34.0
-msal-extensions==1.3.1
-msrest==0.7.1
-msrestazure==0.6.4.post1
-nbclient==0.10.2
-nbconvert==7.16.6
-nbformat==5.10.4
-ndg-httpsclient==0.5.1
-nest_asyncio @ file:///home/conda/feedstock_root/build_artifacts/nest-asyncio_1733325553580/work
-networkx==3.3
-notebook==7.4.8
-notebook_shim==0.2.4
+# PyTorch with CUDA 12.4
+--index-url https://download.pytorch.org/whl/cu124
+torch==2.5.1
+torchvision==0.20.1
+
+# Core dependencies with version pins
 numpy==1.26.4
+opencv-python==4.10.0.84
+pandas==2.2.3
+
+# Scientific computing
+scipy
+scikit-learn
+matplotlib
+pillow
+shapely
+pyquaternion
+
+# nuScenes
 nuscenes-devkit==1.2.0
-oauthlib==3.3.1
-opencv-python-headless==4.11.0.86
-overrides==7.7.0
-packaging @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_packaging_1745345660/work
-pandocfilters==1.5.1
-parameterized==0.9.0
-paramiko==3.5.1
-parso @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_parso_1755974222/work
-pathspec==0.12.1
-pickleshare @ file:///home/conda/feedstock_root/build_artifacts/pickleshare_1733327343728/work
-pillow==11.0.0
-pkginfo==1.12.1.2
-platformdirs @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_platformdirs_1759953252/work
-progressbar2==4.5.0
-prometheus_client==0.23.1
-prompt_toolkit @ file:///home/conda/feedstock_root/build_artifacts/prompt-toolkit_1756321756983/work
-protobuf==6.32.0
-psutil @ file:///D:/bld/psutil_1760894000425/work
-pure_eval @ file:///home/conda/feedstock_root/build_artifacts/pure_eval_1733569405015/work
-pyasn1==0.6.1
-pycocotools==2.0.10
-pycparser==2.23
-pydeps==3.0.1
-Pygments @ file:///home/conda/feedstock_root/build_artifacts/pygments_1750615794071/work
-PyJWT==2.10.1
-PyNaCl==1.6.0
-pyOpenSSL==25.3.0
-pyparsing==3.2.3
-pyquaternion==0.9.9
-pyreadline3==3.5.4
-PySocks==1.7.1
-python-dateutil @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_python-dateutil_1751104122/work
-python-json-logger==4.0.0
-python-utils==3.9.1
-pytz==2025.2
-pywin32 @ file:///D:/bld/bld/rattler-build_pywin32_1756487147/work
-pywinpty==3.0.2
-PyYAML==6.0.3
-pyzmq @ file:///D:/bld/bld/rattler-build_pyzmq_1757387021/work
-referencing==0.37.0
-requests==2.32.5
-requests-oauthlib==2.0.0
-rfc3339-validator==0.1.4
-rfc3986-validator==0.1.1
-rfc3987-syntax==1.1.0
-rpds-py==0.28.0
-scikit-learn==1.7.1
-scipy==1.15.3
-SecretStorage==3.4.0
-Send2Trash==1.8.3
-shapely==2.0.7
-six @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_six_1753199211/work
-smmap==5.0.2
-sniffio==1.3.1
-soupsieve==2.8
-stack_data @ file:///home/conda/feedstock_root/build_artifacts/stack_data_1733569443808/work
-stdlib-list==0.11.1
-sympy==1.13.1
-tabulate==0.9.0
-tensorboard==2.20.0
-tensorboard-data-server==0.7.2
-termcolor==3.1.0
-terminado==0.18.1
-thinplate @ git+https://github.com/cheind/py-thin-plate-spline@f6995795397118b7d0ac01aecd3f39ffbfad9dee
-threadpoolctl==3.6.0
-tinycss2==1.4.0
-tomli==2.3.0
-torch==2.5.1+cu121
-torchaudio==2.5.1+cu121
-torchvision==0.20.1+cu121
-tornado @ file:///D:/bld/tornado_1756854837538/work
-tqdm==4.67.1
-traitlets @ file:///home/conda/feedstock_root/build_artifacts/traitlets_1733367359838/work
-typing_extensions @ file:///home/conda/feedstock_root/build_artifacts/bld/rattler-build_typing_extensions_1756220668/work
-tzdata==2025.2
-uri-template==1.3.0
-urllib3==2.5.0
-wcwidth @ file:///home/conda/feedstock_root/build_artifacts/wcwidth_1758622279606/work
-webcolors==24.11.1
-webencodings==0.5.1
-websocket-client==1.9.0
-Werkzeug==3.1.3
-widgetsnbextension==4.0.14
-zipp @ file:///home/conda/feedstock_root/build_artifacts/zipp_1749421620841/work
+
+# OpenMMLab (install mmcv via mim separately)
+mmengine==0.10.7
+openmim==0.3.9
+
+# Utilities
+tqdm
+rich
+pyyaml
+termcolor
