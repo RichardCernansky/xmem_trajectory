@@ -6,7 +6,7 @@ from index_nuscenes.agent_index import build_agent_sequence_index
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataroot", type=str)
-    ap.add_argument("--version",  type=str, default="v1.0-trainval")
+    ap.add_argument("--version",  type=str, default="v1.0-mini")
     ap.add_argument("--cameras",  nargs="+",
                     default=["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"])
     ap.add_argument("--t_in",     type=int,   default=20)
