@@ -1,6 +1,7 @@
 {
+  "first_stage": true,
   "epochs": 50,
-  "batch_size": 8,
+  "batch_size": 1,
   "mr_radius": 2.0,
   "K": 1,
   "horizon": 12,
@@ -9,10 +10,10 @@
   "H": 400,
   "cw": 320,
   
-  "bev_x_bounds": [-5.0, 55.0],
-  "bev_y_bounds": [-30.0, 30.0],
   "trip": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
 
+  "xmem_resume": false      ,
+  "xmem_model": "/path/to/xmem_stage1.pth",
   "train_xmem_key_encoder": true,
   "train_xmem_val_encoder": true,
   "train_xmem_decoder": true,

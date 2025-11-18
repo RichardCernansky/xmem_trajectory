@@ -10,7 +10,7 @@ from my_model.adapters.pp_to_frames import PPToFrames
 from .xmem_wrapper.predictor import XMemBackboneWrapper
 from .head import MultiModalTrajectoryHead
 from .optimizer import make_optimizer
-from .losses import best_of_k_loss
+from .losses import best_of_k_loss, mask_loss
 from .metrics import metrics_best_of_k
 from visualizer.pred_mask_vis import visualize_steps
 
@@ -72,29 +72,45 @@ class MemoryModel(nn.Module):
 
     # in forward
     def forward(self, batch):
+        print("next forward")
         dev = self.device
 
-        bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True)
-        init_labels   = torch.as_tensor(batch["init_labels"]).to(dev, non_blocking=True).long()
-        lidar         = batch["points"].to(dev, non_blocking=True)
+        bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True).float()
+        init_labels = torch.as_tensor(batch["init_labels"]).to(
+            dev, non_blocking=True
+        ).long()
+        lidar = batch["points"].to(dev, non_blocking=True)
 
         B, T = lidar.shape[:2]
-        seq_feats, write_events = [], []
+        seq_feats = []
+        occ_logits_seq = []
 
         for t in range(T):
-            masks    = bev_masks_all[:, t].float()
+            masks = bev_masks_all[:, t]
             points_t = lidar[:, t]
             bev_feat_t = self.pp(points_t)
             frames_lidar_t = self.pp_to_frames(bev_feat_t)
 
-            feats_t= self.xmem.forward_step(
-                t, frames_lidar_t, init_masks=masks, init_labels=init_labels
+            feats_t, occ_logits_t = self.xmem.forward_step(
+                t,
+                frames_lidar_t,
+                init_masks=masks,
+                init_labels=init_labels,
             )
-            seq_feats.append(feats_t)
 
-        seq_feats = torch.stack(seq_feats, dim=1)
-        traj_res_k, mode_logits = self.head(seq_feats)
-        return traj_res_k, mode_logits
+            seq_feats.append(feats_t)
+            occ_logits_seq.append(occ_logits_t)
+
+        occ_logits = torch.stack(occ_logits_seq, dim=1)
+
+        traj_res_k = None
+        mode_logits = None
+
+        if self.head is not None:
+            seq_feats = torch.stack(seq_feats, dim=1)
+            traj_res_k, mode_logits = self.head(seq_feats)
+
+        return traj_res_k, mode_logits, occ_logits
 
 
 
@@ -102,42 +118,65 @@ class MemoryModel(nn.Module):
         return last_pos[:, None, None, :] + traj_res_k
 
     def training_step(self, batch, epoch: int):
-        self.train() # call train() on all nn.Module submodules
-        gt_future = batch["traj"].to(self.device, non_blocking=True)
-        last_pos  = batch["last_pos"].to(self.device, non_blocking=True)
+        self.train()
 
-        traj_res_k, mode_logits = self.forward(batch)
+        bev_masks_all = batch["bev_target_mask"].to(self.device, non_blocking=True).float()
+        traj_res_k, mode_logits, occ_logits = self.forward(batch)
+
+        loss_mask = mask_loss(occ_logits, bev_masks_all)
+        metrics = {"mask_loss": loss_mask.item()}
+
+        if self.first_stage:
+            loss = loss_mask
+            self.optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            self.optimizer.step()
+            return metrics, None
+
+        gt_future = batch["traj"].to(self.device, non_blocking=True)
+        last_pos = batch["last_pos"].to(self.device, non_blocking=True)
+
         pred_abs_k = self.to_abs(traj_res_k, last_pos)
         ade, fde, loss = best_of_k_loss(pred_abs_k, mode_logits, gt_future)
 
+
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-
-        def mean_grad(m):
-            g = [p.grad.abs().mean().item()
-                for p in m.parameters() if p.grad is not None]
-            return sum(g)/len(g) if g else 0.0
-
-        # print("[GRAD] head:", mean_grad(self.head))
-        # print("[GRAD] xmem.key_enc:",
-        #     mean_grad(self.xmem.xmem_core.key_encoder))
-        # print("[GRAD] xmem.val_enc:",
-        #     mean_grad(self.xmem.xmem_core.value_encoder))
-        # print("[GRAD] xmem.decoder:",
-        #     mean_grad(self.xmem.xmem_core.decoder))
-
         self.optimizer.step()
 
         mr = metrics_best_of_k(pred_abs_k, gt_future, r=self.mr_radius)["MR@2m"]
-        return {"ADE": ade.item(), "FDE": fde.item(), "mADE": ade.item(), "mFDE": fde.item(), "MR@2m": mr, "loss": loss.item()}, pred_abs_k.detach()
+
+        metrics.update(
+            {
+                "ADE": ade.item(),
+                "FDE": fde.item(),
+                "mADE": ade.item(),
+                "mFDE": fde.item(),
+                "MR@2m": mr,
+                "loss": loss.item(),
+            }
+        )
+
+        return metrics, pred_abs_k.detach()
 
     def validation_step(self, batch):
-        self.eval() # call train() on all nn.Module submodules
+        self.eval()
         with torch.inference_mode():
-            gt_future = batch["traj"].to(self.device, non_blocking=True)
-            last_pos  = batch["last_pos"].to(self.device, non_blocking=True)
+            bev_masks_all = batch["bev_target_mask"].to(
+                self.device, non_blocking=True
+            ).float()
+            traj_res_k, mode_logits, occ_logits = self.forward(batch)
 
-            traj_res_k, mode_logits = self.forward(batch)
+            loss_mask = self.mask_loss_fn(occ_logits, bev_masks_all)
+            metrics = {"mask_loss": loss_mask.item()}
+
+            if self.first_stage:
+                return metrics, None
+
+            gt_future = batch["traj"].to(self.device, non_blocking=True)
+            last_pos = batch["last_pos"].to(self.device, non_blocking=True)
+
             pred_abs_k = self.to_abs(traj_res_k, last_pos)
             m = metrics_best_of_k(pred_abs_k, gt_future, r=self.mr_radius)
+            m["mask_loss"] = loss_mask.item()
             return m, pred_abs_k

@@ -7,7 +7,7 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 
 from trainer.utils import open_config
-from data.configs.filenames import TRAIN_CONFIG
+from data.configs.filenames import TRAIN_CONFIG, PP_CONFIG
 from .image_utils import load_resize_arr
 from .mask_utils import bev_box_mask_from_ann
 from .lidar_utils import (
@@ -40,7 +40,8 @@ class NuScenesLoader(Dataset):
         rows: List[Dict[str, Any]],
         dtype: torch.dtype = torch.float32,
     ):
-        cfg = open_config(TRAIN_CONFIG)  # Central config (sizes, bounds, discretization)
+        tr_cfg = open_config(TRAIN_CONFIG)  # Central config (sizes, bounds, discretization)
+        pp_cfg = open_config(PP_CONFIG)
 
         self.nusc = nusc
         self.rows = rows
@@ -51,29 +52,39 @@ class NuScenesLoader(Dataset):
         self.normalize = True
 
         # Camera target sizes and ordering
-        self.H = int(cfg.get("H", 400))
-        self.cw = int(cfg.get("cw", 320))
-        self.trip = cfg.get("trip")  # Ordered camera names used consistently downstream
+        self.H = int(tr_cfg.get("H", 400))
+        self.cw = int(tr_cfg.get("cw", 320))
+        self.trip = tr_cfg.get("trip")  # Ordered camera names used consistently downstream
 
-        # BEV region-of-interest (meters)
-        bev_x_bounds = cfg.get("bev_x_bounds", [-5.0, 55.0])
-        bev_y_bounds = cfg.get("bev_y_bounds", [-30.0, 30.0])
-        self.bev_x_min, self.bev_x_max = map(float, bev_x_bounds)
-        self.bev_y_min, self.bev_y_max = map(float, bev_y_bounds)
+         # === Extract from PointPillars config === REWORKKKK
+    
+        # Get voxel encoder settings
+        voxel_encoder = pp_cfg.get("pts_voxel_encoder", {})
+        
+        # Voxel size: [vx, vy, vz]
+        self.pp_voxel_size = tuple(voxel_encoder.get("voxel_size", [0.2, 0.2, 4.0]))
+        
+        # Point cloud range: [x_min, y_min, z_min, x_max, y_max, z_max]
+        pc_range = voxel_encoder.get("point_cloud_range", [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0])
+        self.bev_x_min, self.bev_y_min = float(pc_range[0]), float(pc_range[1])
+        self.bev_x_max, self.bev_y_max = float(pc_range[3]), float(pc_range[4])
+        
+        # Z bounds for clipping
+        self.pp_z_bounds = (float(pc_range[2]), float(pc_range[5]))
+        
+        # Max points per timestep
+        self.pp_max_in_points = int(pp_cfg.get("max_num_points", 10)) * 1000  # Convert to actual point count
+        # Or use a separate config value:
+        # self.pp_max_in_points = int(tr_cfg.get("pp_max_in_points", 120000))
 
-        # PointPillars discretization and limits
-        self.pp_voxel_size = tuple(cfg.get("pp_voxel_size", [0.2, 0.2, 4.0]))  # (vx, vy, vz)
-        self.pp_z_bounds = tuple(cfg.get("pp_z_bounds", [-5.0, 3.0]))          # z clipping for BEV
-        self.pp_max_in_points = int(cfg.get("pp_max_in_points", 120000))       # per-timestep cap
-
-        # Derived BEV grid shape from ROI and voxel size
+        # === Derive BEV grid shape ===
         vx, vy, _ = self.pp_voxel_size
-        self.H_bev = int(np.floor((self.bev_y_max - self.bev_y_min) / vy))
-        self.W_bev = int(np.floor((self.bev_x_max - self.bev_x_min) / vx))
+        self.H_bev = 256
+        self.W_bev = 256 
         self.res_y = vy
         self.res_x = vx
 
-        # Cache raw LiDAR sweeps for repeated camera depth rasterization
+        # Cache for LiDAR
         self._lidar_xyz_cache: Dict[str, np.ndarray] = {}
 
     def __len__(self) -> int:
