@@ -1,5 +1,6 @@
 {
-  "first_stage": true,
+  "first_stage":false,
+  "xmem_resume": true,
   "epochs": 50,
   "batch_size": 1,
   "mr_radius": 2.0,
@@ -12,8 +13,7 @@
   
   "trip": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
 
-  "xmem_resume": false      ,
-  "xmem_model": "/path/to/xmem_stage1.pth",
+  "xmem_model": "./checkpoints/xmem/xmem_stage1.pth",
   "train_xmem_key_encoder": true,
   "train_xmem_val_encoder": true,
   "train_xmem_decoder": true,

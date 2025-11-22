@@ -9,7 +9,7 @@ def main():
     ap.add_argument("--version",  type=str, default="v1.0-mini")
     ap.add_argument("--cameras",  nargs="+",
                     default=["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"])
-    ap.add_argument("--t_in",     type=int,   default=20)
+    ap.add_argument("--t_in",     type=int,   default=10)
     ap.add_argument("--t_out",    type=int,   default=12)
     ap.add_argument("--stride",   type=int,   default=1)
     ap.add_argument("--min_future",     type=int,   default=12)
@@ -25,18 +25,7 @@ def main():
 
     n_total  = args.n_total
     # Build a single pool from ALL scenes (train+val) — ONE CALL ONLY.
-    rows = build_agent_sequence_index(
-        nusc,
-        splits=None,                      # <- all scenes in this version
-        cameras=args.cameras,
-        t_in=args.t_in,
-        t_out=args.t_out,
-        stride=args.stride,
-        min_future=args.min_future,
-        min_speed_mps=args.min_speed_mps,
-        dataroot=args.dataroot,
-        throttle_max_rows=n_total            # IMPORTANT: disable the default 200-row throttle
-    )
+    rows = build_agent_sequence_index("data/configs/index_config.json")
 
     if len(rows) == 0:
         raise RuntimeError("No rows built. Check your filters (min_future, cameras, etc.).")
@@ -50,10 +39,10 @@ def main():
     rows     = rows[:n_total]
     n_train  = (5 * n_total) // 6
     n_val    = n_total - n_train
-    # train_rows = rows[:n_train]
-    # val_rows   = rows[n_train:n_train + n_val]
-    train_rows = rows[:n_train+1]
-    val_rows = rows[:n_train+1]
+    train_rows = rows[:n_train]
+    val_rows   = rows[n_train:n_train + n_val]
+    # train_rows = rows[:n_train+1]
+    # val_rows = rows[:n_train+1]
 
     # Save
     with open(args.train_path, "wb") as f:

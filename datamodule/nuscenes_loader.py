@@ -62,7 +62,7 @@ class NuScenesLoader(Dataset):
         voxel_encoder = pp_cfg.get("pts_voxel_encoder", {})
         
         # Voxel size: [vx, vy, vz]
-        self.pp_voxel_size = tuple(voxel_encoder.get("voxel_size", [0.2, 0.2, 4.0]))
+        self.pp_voxel_size = tuple(voxel_encoder["voxel_size"])
         
         # Point cloud range: [x_min, y_min, z_min, x_max, y_max, z_max]
         pc_range = voxel_encoder.get("point_cloud_range", [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0])
@@ -78,11 +78,11 @@ class NuScenesLoader(Dataset):
         # self.pp_max_in_points = int(tr_cfg.get("pp_max_in_points", 120000))
 
         # === Derive BEV grid shape ===
-        vx, vy, _ = self.pp_voxel_size
-        self.H_bev = 256
-        self.W_bev = 256 
-        self.res_y = vy
-        self.res_x = vx
+        vx, vy, _ = self.pp_voxel_size  # (0.2, 0.2, 4.0)
+        self.H_bev = int((self.bev_x_max - self.bev_x_min) / vx)  # 512
+        self.W_bev = int((self.bev_y_max - self.bev_y_min) / vy)  # 512
+        self.res_x = vx  # 0.2
+        self.res_y = vy  # 0.2
 
         # Cache for LiDAR
         self._lidar_xyz_cache: Dict[str, np.ndarray] = {}

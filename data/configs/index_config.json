@@ -1,5 +1,52 @@
 {
-    "horizon": 12,
-    "cameras": ["CAM_FRONT_LEFT","CAM_FRONT","CAM_FRONT_RIGHT"],
-    "pano_final_size": [384, 640]
+  "dataset": {
+    "version": "v1.0-mini",
+    "dataroot": "/home/cernanskyr/v1.0-mini",
+    "splits": "train"
+  },
+  
+  "sequence": {
+    "t_in": 9,
+    "t_out": 10,
+    "stride": 2,
+    "min_future": 10,
+    "min_speed_mps": 0.0
+  },
+  
+  "sensors": {
+    "cameras": ["CAM_FRONT_LEFT", "CAM_FRONT", "CAM_FRONT_RIGHT"],
+    "lidar_sensor": "LIDAR_TOP",
+    "num_lidar_sweeps": 12,
+    "max_lidar_sweep_age_s": 0.6
+  },
+  
+  "filtering": {
+    "class_prefixes": ["vehicle.", "human."],
+    "camera_visibility": "ANY",
+    
+    "bev_config": {
+      "x_min": -51.2,
+      "x_max": 51.2,
+      "y_min": -51.2,
+      "y_max": 51.2,
+      "H_bev": 256,
+      "W_bev": 256,
+      "res_x": 0.2,
+      "res_y": 0.2
+    },
+    
+    "mask_requirements": {
+      "enabled": true,
+      "min_pixels_first_frame": 0,
+      "min_pixels_any_frame": 30,
+      "max_invisible_frames": 2,
+      "max_consecutive_invisible": 2,
+      "require_first_visible": true
+    }
+  },
+  
+  "output": {
+    "verbose_stats": true,
+    "throttle_max_rows": null
+  }
 }

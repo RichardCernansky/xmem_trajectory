@@ -139,5 +139,19 @@ xmem edit memoery manager line 222 gv unsqueeze
 # TODO: SOLVE NORMALIZARION, update optimizer optimizer, mask=union detachment in predictor, decide on strategy of xmem pre-training
 
 
+Xmem predictor training
+epoch 0: train={'mask_loss': 0.6472291350364685}, val={'mask_loss': 0.7567994594573975}                                                                                                                                                                                                 
+epoch 1: train={'mask_loss': 0.5467812418937683}, val={'mask_loss': 0.7568157315254211}                                                                                                                                                                                                 
+epoch 2: train={'mask_loss': 0.7769875526428223}, val={'mask_loss': 0.7568175196647644}                                                                                                                                                                                                 
+epoch 3: train={'mask_loss': 0.7351729273796082}, val={'mask_loss': 0.7568275928497314}                                                                                                                                                                                                 
+epoch 4: train={'mask_loss': 0.6627680659294128}, val={'mask_loss': 0.7568188309669495}                                                                                                                                                                                                 
+epoch 5: train={'mask_loss': 0.5467884540557861}, val={'mask_loss': 0.7568191289901733}                                                                                                                                                                                                 
+epoch 6: train={'mask_loss': 0.4553024470806122}, val={'mask_loss': 0.7568931579589844}                                                                                                                                                                                                 
+epoch 7: train={'mask_loss': 0.5361988544464111}, val={'mask_loss': 0.7568467855453491}                                                                                                                                                                                                 
+epoch 8: train={'mask_loss': 0.7973802089691162}, val={'mask_loss': 0.7568185925483704}                                                                                                                                                                                                 
+epoch 9: train={'mask_loss': 0.8118299841880798}, val={'mask_loss': 0.7565058469772339}                                                                                                                                                                                                 
+epoch 10: train={'mask_loss': 0.8118299841880798}, val={'mask_loss': 0.7565058469772339}                                                                                                                                                                                                
+epoch 11: train={'mask_loss': 0.7588531374931335}, val={'mask_loss': 0.7565058469772339}   
+
 
 

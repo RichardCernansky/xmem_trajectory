@@ -1,0 +1,23 @@
+{
+    "first_stage": true,
+    "xmem_resume": false,
+    "batch_size": 1,
+    "xmem_epochs": 20,
+    "xmem_model": "checkpoints/xmem/xmem_stage1.pth",
+  
+    "K": 6,
+    "horizon": 12,
+    "mr_radius": 2.0,
+    "mask_loss_mode": "bce_dice",
+  
+    "train_xmem_decoder": true,
+    "train_xmem_key_encoder": true,
+    "train_xmem_val_encoder": true,
+  
+    "train_index": "data/indexes/train_agents_index_mini.pkl",
+    "val_index": "data/indexes/val_agents_index_mini.pkl",
+  
+    "nusc_dataroot": "/home/cernanskyr/v1.0-mini",
+    "nusc_version": "v1.0-mini"
+  }
+  

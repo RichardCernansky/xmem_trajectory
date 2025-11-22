@@ -2,7 +2,7 @@
 import torch, torch.nn as nn
 import os
 from trainer.utils import open_config
-from data.configs.filenames import TRAIN_CONFIG, PP_CONFIG, PP_CHECKPOINT
+from data.configs.filenames import PP_CONFIG, PP_CHECKPOINT
 
 from my_model.lidar.pp_loader import build_pointpillars, load_pp_backbone_weights
 from my_model.adapters.pp_to_frames import PPToFrames 
@@ -12,17 +12,19 @@ from .head import MultiModalTrajectoryHead
 from .optimizer import make_optimizer
 from .losses import best_of_k_loss, mask_loss
 from .metrics import metrics_best_of_k
-from visualizer.pred_mask_vis import visualize_steps
+from visualizer.visualizer import visualize
+
 
 
 class MemoryModel(nn.Module):
-    def __init__(self, device: str, vis_path):
+    def __init__(self, device: str, vis_path, train_config: dict):
         super().__init__()
         self.device = device
-        self.train_config = open_config(TRAIN_CONFIG)
+        self.train_config = train_config
         self.pp_config = open_config(PP_CONFIG)
         self.vis_path = vis_path
-
+        
+        self.first_stage = self.train_config["first_stage"]
         self.K         = int(self.train_config["K"])
         self.horizon   = int(self.train_config["horizon"])
         self.mr_radius = float(self.train_config["mr_radius"])
@@ -37,7 +39,7 @@ class MemoryModel(nn.Module):
         self.pp_to_frames = PPToFrames(c_in= self.pp.pts_neck.out_channels if self.pp.pts_neck else 256).to(device)
 
         # XMem (uses its own flags from your wrapper; frozen or trainable via config)
-        self.xmem = XMemBackboneWrapper(device)
+        self.xmem = XMemBackboneWrapper(device, self.train_config)
         self.hidden_dim = self.xmem.hidden_dim  # D from your wrapper (e.g., 64)
 
         # trajectory head
@@ -72,7 +74,6 @@ class MemoryModel(nn.Module):
 
     # in forward
     def forward(self, batch):
-        print("next forward")
         dev = self.device
 
         bev_masks_all = batch["bev_target_mask"].to(dev, non_blocking=True).float()
@@ -121,7 +122,9 @@ class MemoryModel(nn.Module):
         self.train()
 
         bev_masks_all = batch["bev_target_mask"].to(self.device, non_blocking=True).float()
+
         traj_res_k, mode_logits, occ_logits = self.forward(batch)
+        visualize(epoch, batch, self.pp, occ_logits.detach(), bev_masks_all.detach())
 
         loss_mask = mask_loss(occ_logits, bev_masks_all)
         metrics = {"mask_loss": loss_mask.item()}
@@ -167,7 +170,7 @@ class MemoryModel(nn.Module):
             ).float()
             traj_res_k, mode_logits, occ_logits = self.forward(batch)
 
-            loss_mask = self.mask_loss_fn(occ_logits, bev_masks_all)
+            loss_mask = mask_loss(occ_logits, bev_masks_all)
             metrics = {"mask_loss": loss_mask.item()}
 
             if self.first_stage:

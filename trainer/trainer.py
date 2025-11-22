@@ -2,7 +2,6 @@ import argparse
 import pickle
 import os, time, sys
 import torch
-import torch.multiprocessing as mp
 
 import matplotlib.pyplot as plt
 
@@ -10,28 +9,9 @@ from my_model.model import MemoryModel
 from trainer.utils import open_config, open_index
 from data.configs.filenames import TRAIN_CONFIG, TRAJ_VIS_OUT_PATH
 from visualizer.vis_traj import TrajVisualizer
-from datamodule.datamodule import NuScenesDataModule
+from datamodule.datamodule import NuScenesDataModule, load_nuscenes
 from nuscenes.nuscenes import NuScenes
 
-def load_nuscens(args):
-    cache_file = 'data/nuscens_cache.pkl'
-    
-    # Check if the cached instance exists
-    try:
-        with open(cache_file, 'rb') as f:
-            nusc = pickle.load(f)
-            print("Loaded cached NuScenes instance")
-            return nusc
-    except FileNotFoundError:
-        # Cache not found, so we create the instance
-        nusc = NuScenes(version=args.version, dataroot=str(args.dataroot), verbose=True)
-        
-        # Cache the instance
-        with open(cache_file, 'wb') as f:
-            pickle.dump(nusc, f)
-            print("NuScenes instance cached")
-
-        return nusc
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -53,7 +33,6 @@ def _sync():
         torch.cuda.synchronize()
 
 def run_epoch(model, mode, loader, ep: int):
-
 
     train_mode = (mode == "train")
     (model.train if train_mode else model.eval)()
@@ -109,7 +88,7 @@ def main():
     vis_path = ckpt_dir
 
     # NuScenes
-    nusc = load_nuscens(args)
+    nusc = load_nuscenes(args)
 
     # Load config & indices
     train_config = open_config(TRAIN_CONFIG)

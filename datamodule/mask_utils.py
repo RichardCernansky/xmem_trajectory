@@ -37,10 +37,21 @@ def _rect_corners_xy(center_xy, yaw, length, width):
     R = np.array([[c, -s],[s, c]], dtype=np.float32)
     return (local @ R.T) + np.array([cx, cy], dtype=np.float32)  # (4,2)
 
-def _xy_to_bev_pixels(xs, ys, x_min, y_min, res_x, res_y):
-    cols = (xs - x_min) / float(res_x)  # x -> col
-    rows = (ys - y_min) / float(res_y)  # y -> row (y_min at top)
+def _xy_to_bev_pixels(xs, ys, x_min, y_min, x_max, y_max, res_x, res_y):
+    """
+    Convert ego-frame (x,y) coordinates to BEV pixel (row, col) indices.
+    
+    NuScenes ego frame: x=forward, y=left
+    BEV image: row 0 = forward, col 0 = left
+    """
+    # Forward -> top of image (row 0)
+    rows = (x_max - xs) / res_x
+    
+    # Left -> left of image (col 0)
+    cols = (y_max - ys) / res_y
+    
     return rows, cols
+
 
 def ann_to_bev_polygon_pixels(loader, ann, lidar_sd_token):
     """
@@ -49,38 +60,41 @@ def ann_to_bev_polygon_pixels(loader, ann, lidar_sd_token):
     """
     if ann is None:
         return None
-
+    
     # global -> ego@LiDAR time
     T_ego_from_global, yaw_ego_global = _ego_from_global_T(loader.nusc, lidar_sd_token)
-
+    
     # center in ego
     t_g = np.array(ann["translation"], dtype=np.float32)  # (x,y,z)
     p_g = np.array([t_g[0], t_g[1], t_g[2], 1.0], dtype=np.float32)
     p_e = T_ego_from_global @ p_g
     cx_e, cy_e = float(p_e[0]), float(p_e[1])
-
+    
     # nuScenes size = [width, length, height]
     size = np.asarray(ann["size"], dtype=np.float32)
     width, length = float(size[0]), float(size[1])
-
+    
     # yaw in ego
     yaw_e = _yaw_from_quat(ann["rotation"]) - yaw_ego_global
-
-    # 4 corners in ego meters
+    
+    # 4 corners in ego meters (x, y)
     xy_e = _rect_corners_xy((cx_e, cy_e), yaw_e, length=length, width=width)  # (4,2)
-
-    # meters -> pixels (your convention)
+    
+    # meters -> pixels
     r, c = _xy_to_bev_pixels(
         xs=xy_e[:,0], ys=xy_e[:,1],
         x_min=loader.bev_x_min, y_min=loader.bev_y_min,
-        res_x=loader.res_x,     res_y=loader.res_y
+        x_max=loader.bev_x_max, y_max=loader.bev_y_max,
+        res_x=loader.res_x, res_y=loader.res_y
     )
-    poly = np.stack([c, r], axis=1)  # (x,y) = (col,row)
+    
+    poly = np.stack([c, r], axis=1)  # OpenCV expects (x, y) = (col, row)
     poly = np.rint(poly).astype(np.int32)
-
+    
     # clamp to canvas
     poly[:,0] = np.clip(poly[:,0], 0, loader.W_bev - 1)
     poly[:,1] = np.clip(poly[:,1], 0, loader.H_bev - 1)
+    
     return poly  # (4,2) int32
 
 def bev_box_mask_from_ann(loader, ann, lidar_sd_token, fill_value=1):

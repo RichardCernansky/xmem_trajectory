@@ -1,5 +1,6 @@
 import torch
 from my_model.metrics import ade_fde_per_mode
+import torch.nn.functional as F
 
 def best_of_k_loss(pred_abs_k, logits, gt_abs, ce_weight=0.1, fde_weight=2.0):
     ade_k, fde_k = ade_fde_per_mode(pred_abs_k, gt_abs)
@@ -15,6 +16,16 @@ def best_of_k_loss(pred_abs_k, logits, gt_abs, ce_weight=0.1, fde_weight=2.0):
 def mask_loss(occ_logits, target_masks, mode: str = "bce_dice", smooth: float = 1e-5):
     occ_logits = occ_logits.float()
     target_masks = target_masks.float()
+
+    B, T, C, H_pred, W_pred = occ_logits.shape
+    _, T_gt, C_gt, H_gt, W_gt = target_masks.shape
+
+    if (H_gt, W_gt) != (H_pred, W_pred):
+        target_masks = F.interpolate(
+            target_masks.view(B * T, C, H_gt, W_gt),
+            size=(H_pred, W_pred),
+            mode="nearest",
+        ).view(B, T, C, H_pred, W_pred)
 
     if mode == "bce":
         return F.binary_cross_entropy_with_logits(occ_logits, target_masks)

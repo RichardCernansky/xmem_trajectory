@@ -2,6 +2,28 @@ from torch.utils.data import DataLoader
 from .nuscenes_loader import NuScenesLoader
 from .collate import collate_varK
 import os, torch
+import pickle
+from nuscenes.nuscenes import NuScenes
+
+def load_nuscenes(dataroot, version):
+    cache_file = 'data/nuscens_cache.pkl'
+    
+    # Check if the cached instance exists
+    try:
+        with open(cache_file, 'rb') as f:
+            nusc = pickle.load(f)
+            print("Loaded cached NuScenes instance")
+            return nusc
+    except FileNotFoundError:
+        # Cache not found, so we create the instance
+        nusc = NuScenes(version=version, dataroot=dataroot, verbose=True)
+        
+        # Cache the instance
+        with open(cache_file, 'wb') as f:
+            pickle.dump(nusc, f)
+            print("NuScenes instance cached")
+
+        return nusc
 
 class NuScenesDataModule:
     def __init__(
